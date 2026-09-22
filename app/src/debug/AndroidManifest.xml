@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Explicit adb entry point, absent from release builds. No automatic capture. -->
+        <activity android:name=".probe.LiveProbeActivity" android:exported="true"
+            android:screenOrientation="portrait" />
+    </application>
+</manifest>
