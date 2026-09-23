@@ -64,6 +64,14 @@ sdk.dir=C\:\\Android\\Sdk
 
 Debug APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`。
 
+首次制作正式签名 APK 时，在自己的 PowerShell 终端运行：
+
+```powershell
+.\tools\build-release.ps1
+```
+
+脚本会在仓库之外创建 `Lenshelf/signing/lenshelf-release.p12`（位于当前用户的 LocalAppData），交互式要求设置密码，并输出 `app/build/outputs/apk/release/Lenshelf-v0.6.5.apk`。密码不会写入项目或脚本。务必将密钥文件和密码分别安全备份；以后的正式版必须使用同一密钥签名。调试签名版不能直接由正式签名版覆盖安装，卸载旧应用前请先确认应用数据与媒体备份。
+
 ### macOS / Linux
 
 设置 `ANDROID_HOME` 或创建 `local.properties`，然后执行：
@@ -94,7 +102,7 @@ tools/                Motion Photo、采集日志和音画同步分析脚本
 branding/             品牌源素材
 ```
 
-当前公开文件清单共 **100 个**；发生文件增删时应重新统计。
+当前公开文件清单共 **107 个**；发生文件增删时应重新统计。
 
 ## 文档
 
