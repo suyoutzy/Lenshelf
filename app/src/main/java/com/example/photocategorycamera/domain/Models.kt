@@ -45,18 +45,6 @@ data class PendingMedia(
     val categoryName: String,
     val mediaKind: MediaKind = MediaKind.PHOTO,
 ) {
-    constructor(
-        tempPath: String,
-        categoryId: String,
-        categoryName: String,
-        isMotionPhoto: Boolean,
-    ) : this(
-        tempPath,
-        categoryId,
-        categoryName,
-        if (isMotionPhoto) MediaKind.MOTION_PHOTO else MediaKind.PHOTO,
-    )
-
     val isMotionPhoto: Boolean get() = mediaKind == MediaKind.MOTION_PHOTO
 }
 

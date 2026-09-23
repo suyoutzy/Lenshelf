@@ -55,7 +55,7 @@ import kotlin.math.roundToInt
 
 data class VideoRecordingCallbacks(
     val onStarted: (String, VideoStabilizationStatus, String?) -> Unit,
-    val onStatus: (Long, Long) -> Unit,
+    val onStatus: (Long) -> Unit,
     val onPaused: () -> Unit,
     val onResumed: () -> Unit,
     val onFinalized: (File, String?) -> Unit,
@@ -500,10 +500,7 @@ class CameraController(
                     actualStatus,
                     stabilizationWarning,
                 )
-                is VideoRecordEvent.Status -> callbacks.onStatus(
-                    event.recordingStats.recordedDurationNanos,
-                    event.recordingStats.numBytesRecorded,
-                )
+                is VideoRecordEvent.Status -> callbacks.onStatus(event.recordingStats.recordedDurationNanos)
                 is VideoRecordEvent.Pause -> {
                     standaloneVideoPaused = true
                     callbacks.onPaused()

@@ -5,7 +5,6 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.photocategorycamera.domain.Category
 import com.example.photocategorycamera.domain.MediaKind
-import com.example.photocategorycamera.domain.StorageRoot
 
 enum class CaptureTaskStage { CAPTURING, READY, SAVING, RETRY, FAILED }
 
@@ -29,5 +28,4 @@ data class CaptureTaskEntity(
     val kind: MediaKind get() = MediaKind.entries.firstOrNull { it.name == mediaKind } ?: MediaKind.PHOTO
     val taskStage: CaptureTaskStage get() = CaptureTaskStage.entries.firstOrNull { it.name == stage } ?: CaptureTaskStage.FAILED
     fun category() = Category(categoryId, categoryName, 0, true, createdAt)
-    fun root() = StorageRoot(rootTreeUri, "", createdAt)
 }

@@ -21,12 +21,11 @@ import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.max
 
-enum class VideoRecordingPhase { IDLE, PREPARING, RECORDING, PAUSED, FINALIZING, SAVING }
+enum class VideoRecordingPhase { IDLE, PREPARING, RECORDING, PAUSED, FINALIZING }
 
 data class VideoRecordingState(
     val phase: VideoRecordingPhase = VideoRecordingPhase.IDLE,
     val elapsedNanos: Long = 0L,
-    val bytes: Long = 0L,
     val qualityLabel: String? = null,
     val warningShown: Boolean = false,
     val stabilizationStatus: VideoStabilizationStatus = VideoStabilizationStatus.DISABLED_BY_USER,
@@ -66,7 +65,6 @@ class CameraViewModel(
     private val mutableState = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = mutableState.asStateFlow()
     private var frozenCategory: Category? = null
-    private var frozenRoot: StorageRoot? = null
 
     init {
         viewModelScope.launch {
@@ -145,7 +143,6 @@ class CameraViewModel(
             return false
         }
         frozenCategory = category
-        frozenRoot = root
         mutableState.value = snapshot.copy(
             message = "正在准备录像…",
             video = VideoRecordingState(phase = VideoRecordingPhase.PREPARING),
@@ -181,14 +178,13 @@ class CameraViewModel(
         )
     }
 
-    fun onVideoStatus(elapsedNanos: Long, bytes: Long) {
+    fun onVideoStatus(elapsedNanos: Long) {
         val current = mutableState.value.video
         val showWarning = elapsedNanos >= VIDEO_WARNING_NANOS && !current.warningShown
         mutableState.value = mutableState.value.copy(
             message = if (showWarning) "录像将在30秒后自动结束" else mutableState.value.message,
             video = current.copy(
                 elapsedNanos = elapsedNanos,
-                bytes = bytes,
                 warningShown = current.warningShown || showWarning,
             ),
         )
@@ -204,7 +200,7 @@ class CameraViewModel(
 
     fun markVideoFinalizing() {
         val current = mutableState.value
-        if (!current.video.isActive || current.video.phase == VideoRecordingPhase.SAVING) return
+        if (!current.video.isActive) return
         mutableState.value = current.copy(
             message = "正在结束并校验录像…",
             video = current.video.copy(phase = VideoRecordingPhase.FINALIZING),
@@ -285,7 +281,6 @@ class CameraViewModel(
 
     private fun clearFrozenVideoTarget() {
         frozenCategory = null
-        frozenRoot = null
     }
 
     companion object {

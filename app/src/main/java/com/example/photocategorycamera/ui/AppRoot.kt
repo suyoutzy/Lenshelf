@@ -1458,7 +1458,7 @@ private fun CameraScreen(
                             Text(
                                 when (state.video.phase) {
                                     VideoRecordingPhase.PREPARING -> "准备中"
-                                    VideoRecordingPhase.FINALIZING, VideoRecordingPhase.SAVING -> "处理中"
+                                    VideoRecordingPhase.FINALIZING -> "处理中"
                                     else -> formatVideoDuration(state.video.elapsedNanos)
                                 },
                                 color = Color.White,
