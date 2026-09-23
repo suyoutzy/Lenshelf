@@ -6,12 +6,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.photocategorycamera.AppContainer
 import com.example.photocategorycamera.data.AppSettings
-import com.example.photocategorycamera.data.CaptureTaskStage
 import com.example.photocategorycamera.domain.Category
 import com.example.photocategorycamera.domain.CategoryNameValidator
 import com.example.photocategorycamera.domain.CaptureStatus
 import com.example.photocategorycamera.domain.FolderOpenMode
-import com.example.photocategorycamera.domain.StorageRoot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -22,28 +20,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-data class AppUiState(
-    val categories: List<Category> = emptyList(),
-    val categoryFileCounts: Map<String, Int> = emptyMap(),
-    val storageRoot: StorageRoot? = null,
-    val hasPendingCapture: Boolean = false,
-    val pendingCaptureCount: Int = 0,
-    val pendingCategoryName: String? = null,
-    val failedCaptureCount: Int = 0,
-    val failedCaptureError: String? = null,
-    val canRetryCapture: Boolean = false,
-    val folderOpenMode: FolderOpenMode = FolderOpenMode.SYSTEM,
-    val cameraGridEnabled: Boolean = false,
-    val motionPhotoEnabled: Boolean = false,
-    val videoStabilizationEnabled: Boolean = true,
-    val busy: Boolean = false,
-    val message: String? = null,
-)
-
 class AppViewModel(private val container: AppContainer) : ViewModel() {
     private val busy = MutableStateFlow(false)
     private val message = MutableStateFlow<String?>(null)
-    private val fileCounts = MutableStateFlow<Pair<String?, Map<String, Int>>>(null to emptyMap())
+    private val fileCounts = MutableStateFlow(CategoryFileCounts())
     private val countRefreshMutex = Mutex()
 
     val state: StateFlow<AppUiState> = combine(
@@ -53,37 +33,21 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         busy,
         message,
     ) { categories, settings, tasks, isBusy, currentMessage ->
-        val retryTask = tasks.firstOrNull { it.taskStage == CaptureTaskStage.RETRY }
-        val failedTasks = tasks.filter { it.taskStage == CaptureTaskStage.FAILED }
-        val activeTaskCount = tasks.size - failedTasks.size
-        AppUiState(
-            categories = categories,
-            storageRoot = settings.storageRoot,
-            hasPendingCapture = settings.pendingCapture != null || retryTask != null || failedTasks.isNotEmpty(),
-            pendingCaptureCount = activeTaskCount + if (settings.pendingCapture != null) 1 else 0,
-            pendingCategoryName = settings.pendingCapture?.categoryName ?: retryTask?.categoryName
-                ?: failedTasks.firstOrNull()?.categoryName,
-            failedCaptureCount = failedTasks.size,
-            failedCaptureError = failedTasks.firstOrNull()?.error,
-            canRetryCapture = settings.pendingCapture != null || retryTask != null,
-            folderOpenMode = settings.folderOpenMode,
-            cameraGridEnabled = settings.cameraGridEnabled,
-            motionPhotoEnabled = settings.motionPhotoEnabled,
-            videoStabilizationEnabled = settings.videoStabilizationEnabled,
-            busy = isBusy,
-            message = currentMessage,
-        )
+        AppUiStateMapper.create(categories, settings, tasks, isBusy, currentMessage)
     }.combine(fileCounts) { ui, counts ->
-        ui.copy(categoryFileCounts = if (ui.storageRoot?.treeUri == counts.first) counts.second else emptyMap())
+        AppUiStateMapper.withFileCounts(ui, counts)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppUiState())
 
     suspend fun refreshCategoryFileCounts() = countRefreshMutex.withLock {
         val root = currentSettings().storageRoot ?: return@withLock
         val categories = container.categories.getAll().filter { it.isActive }
         val counts = container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), categories.map { it.name })
-        fileCounts.value = root.treeUri to counts.getOrNull().orEmpty().let { byName ->
-            categories.mapNotNull { category -> byName[category.name]?.let { category.id to it } }.toMap()
-        }
+        fileCounts.value = CategoryFileCounts(
+            rootTreeUri = root.treeUri,
+            byCategoryId = counts.getOrNull().orEmpty().let { byName ->
+                categories.mapNotNull { category -> byName[category.name]?.let { category.id to it } }.toMap()
+            },
+        )
     }
 
     init {
