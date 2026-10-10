@@ -34,6 +34,8 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         message,
     ) { categories, settings, tasks, isBusy, currentMessage ->
         AppUiStateMapper.create(categories, settings, tasks, isBusy, currentMessage)
+    }.combine(container.documents.editable) { ui, draft ->
+        ui.copy(documentDraft = draft)
     }.combine(fileCounts) { ui, counts ->
         AppUiStateMapper.withFileCounts(ui, counts)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppUiState())
@@ -65,6 +67,14 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
                 }
                 .onFailure { message.value = it.message ?: "根目录设置失败" }
             busy.value = false
+        }
+    }
+
+    fun discardDocument(id: String) {
+        viewModelScope.launch {
+            runCatching { container.documents.discard(id) }
+                .onSuccess { message.value = "已丢弃待确认文档" }
+                .onFailure { message.value = it.message ?: "无法丢弃文档草稿" }
         }
     }
 

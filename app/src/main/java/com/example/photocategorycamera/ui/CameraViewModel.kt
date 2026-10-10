@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import com.example.photocategorycamera.domain.CaptureMode
+import com.example.photocategorycamera.data.DocumentDraftEntity
+import com.example.photocategorycamera.data.DocumentReservation
 import java.io.File
 import kotlin.math.max
 
@@ -45,9 +49,12 @@ data class CameraUiState(
     val failedCaptureCount: Int = 0,
     val failedCaptureError: String? = null,
     val video: VideoRecordingState = VideoRecordingState(),
+    val captureMode: CaptureMode = CaptureMode.PHOTO,
+    val documentCapturing: Boolean = false,
+    val documentDraft: DocumentDraftEntity? = null,
 ) {
     val captureQueueFull: Boolean get() = pendingCaptureCount >= com.example.photocategorycamera.data.CaptureTaskRepository.MAX_OUTSTANDING
-    val controlsLocked: Boolean get() = video.isActive
+    val controlsLocked: Boolean get() = video.isActive || documentCapturing
 }
 
 data class VideoPreparation(
@@ -61,8 +68,9 @@ class CameraViewModel(
     private val appContext: Context,
     private val categoryId: String,
     private val container: AppContainer,
+    private val retakeId: String? = null,
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(CameraUiState())
+    private val mutableState = MutableStateFlow(CameraUiState(captureMode = if (retakeId != null) CaptureMode.DOCUMENT else CaptureMode.PHOTO))
     val state: StateFlow<CameraUiState> = mutableState.asStateFlow()
     private var frozenCategory: Category? = null
 
@@ -70,12 +78,17 @@ class CameraViewModel(
         viewModelScope.launch {
             val category = container.categories.findById(categoryId)
             val settings = container.settings.settings.first()
-            mutableState.value = CameraUiState(
+            mutableState.value = mutableState.value.copy(
                 category = category,
                 activeCategories = container.categories.getAll().filter { it.isActive },
                 storageRoot = settings.storageRoot,
                 canRetry = settings.pendingCapture != null,
             )
+        }
+        viewModelScope.launch {
+            container.documents.editable.collectLatest { draft ->
+                mutableState.value = mutableState.value.copy(documentDraft = draft)
+            }
         }
         viewModelScope.launch {
             container.captureTasks.outstanding.collectLatest { tasks ->
@@ -103,6 +116,40 @@ class CameraViewModel(
     }
 
     fun createTempFile(): File = createRecoveryFile("capture_", ".jpg")
+
+    fun setCaptureMode(mode: CaptureMode) {
+        if (!mutableState.value.controlsLocked) mutableState.value = mutableState.value.copy(captureMode = mode)
+    }
+
+    fun beginDocumentCapture(onReserved: (DocumentReservation) -> Unit) {
+        val snapshot = mutableState.value
+        val category = snapshot.category ?: return
+        val root = snapshot.storageRoot ?: return
+        if (snapshot.controlsLocked || snapshot.captureQueueFull) return
+        mutableState.value = snapshot.copy(documentCapturing = true)
+        viewModelScope.launch {
+            container.documents.reserve(category, root, retakeId)
+                .onSuccess(onReserved)
+                .onFailure { mutableState.value = mutableState.value.copy(documentCapturing = false, message = it.message) }
+        }
+    }
+
+    fun onDocumentCaptured(id: String, onReview: (String) -> Unit) {
+        container.documents.completeCapture(id) { result ->
+            if (viewModelScope.isActive) {
+                mutableState.value = mutableState.value.copy(documentCapturing = false)
+                result.onSuccess { onReview(id) }.onFailure {
+                    container.documents.captureFailed(id)
+                    reportMessage(it.message ?: "文档未拍摄完整")
+                }
+            }
+        }
+    }
+
+    fun onDocumentFailed(id: String, error: String) {
+        container.documents.captureFailed(id)
+        mutableState.value = mutableState.value.copy(documentCapturing = false, message = error)
+    }
 
     fun beginCapture(onReserved: (com.example.photocategorycamera.data.CaptureReservation) -> Unit): Boolean {
         val snapshot = mutableState.value
@@ -132,6 +179,7 @@ class CameraViewModel(
 
     fun prepareVideo(onPrepared: (VideoPreparation) -> Unit): Boolean {
         val snapshot = mutableState.value
+        if (snapshot.captureMode == CaptureMode.DOCUMENT) return false
         val category = snapshot.category
         val root = snapshot.storageRoot
         if (snapshot.controlsLocked || snapshot.captureQueueFull || category == null || root == null) return false
@@ -233,6 +281,10 @@ class CameraViewModel(
 
     fun switchCategory(newCategoryId: String) {
         val snapshot = mutableState.value
+        if (retakeId != null) {
+            reportMessage("重拍文档保留原分类，请返回首页后再切换")
+            return
+        }
         if (snapshot.controlsLocked) {
             mutableState.value = snapshot.copy(message = "保存或录像结束后才能切换分类")
             return
@@ -289,11 +341,11 @@ class CameraViewModel(
         private const val MIN_VIDEO_BUDGET_BYTES = 128L * MIB
         private const val VIDEO_WARNING_NANOS = 570L * 1_000_000_000L
 
-        fun factory(context: Context, categoryId: String, container: AppContainer) =
+        fun factory(context: Context, categoryId: String, container: AppContainer, retakeId: String? = null) =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    CameraViewModel(context.applicationContext, categoryId, container) as T
+                    CameraViewModel(context.applicationContext, categoryId, container, retakeId) as T
             }
     }
 }

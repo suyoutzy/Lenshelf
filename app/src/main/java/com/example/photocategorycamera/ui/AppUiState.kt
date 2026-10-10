@@ -22,6 +22,7 @@ data class AppUiState(
     val videoStabilizationEnabled: Boolean = true,
     val busy: Boolean = false,
     val message: String? = null,
+    val documentDraft: com.example.photocategorycamera.data.DocumentDraftEntity? = null,
 )
 
 internal data class CategoryFileCounts(

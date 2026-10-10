@@ -57,7 +57,7 @@ result = {
     "queueReachedEight": 8 in queue_counts,
     "rejectedCount": sum(event["event"] == "capture_rejected" for event in events),
     "failures": [event for event in events if event["event"] in {
-        "capture_failed", "capture_submit_failed", "saf_failed", "photo_only", "recovery_failed"
+        "ordinary_capture_failed", "saf_failed", "recovery_failed"
     }],
 }
 print(json.dumps(result, ensure_ascii=False, indent=2))

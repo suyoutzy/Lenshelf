@@ -76,7 +76,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -87,8 +86,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -113,10 +110,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.photocategorycamera.camera.CameraController
 import com.example.photocategorycamera.camera.VideoRecordingCallbacks
 import com.example.photocategorycamera.domain.Category
+import com.example.photocategorycamera.domain.CaptureMode
 import com.example.photocategorycamera.domain.CameraOrientation
 import com.example.photocategorycamera.domain.CameraOrientationFilter
 import com.example.photocategorycamera.domain.ExposureDragMapper
@@ -139,6 +136,7 @@ internal fun CameraScreen(
     onGridEnabledChanged: (Boolean) -> Unit,
     videoStabilizationEnabled: Boolean,
     onVideoStabilizationEnabledChanged: (Boolean) -> Unit,
+    onReviewDocument: (String) -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -190,6 +188,11 @@ internal fun CameraScreen(
     var focusSequence by remember { mutableIntStateOf(0) }
     var bottomExposureActive by remember { mutableStateOf(false) }
     var previewSize by remember { mutableStateOf(IntSize.Zero) }
+    var documentOutline by remember { mutableStateOf<FloatArray?>(null) }
+
+    LaunchedEffect(state.captureMode) {
+        controller.setDocumentMode(state.captureMode == CaptureMode.DOCUMENT)
+    }
     var stabilizationSupported by remember { mutableStateOf(false) }
     var rotationTarget by remember { mutableStateOf(0f) }
     var leaveAfterVideo by remember { mutableStateOf(false) }
@@ -252,15 +255,18 @@ internal fun CameraScreen(
         onDispose { orientationListener.disable() }
     }
     DisposableEffect(controller) { onDispose { controller.release() } }
-    DisposableEffect(lifecycleOwner, controller) {
+    DisposableEffect(lifecycleOwner, controller, state.captureMode) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
                     if (controller.isVideoRunning()) {
                         viewModel.markVideoFinalizing()
                         controller.stopVideo()
+                    } else if (state.captureMode == CaptureMode.DOCUMENT) {
+                        controller.suspendCamera()
                     }
                 }
+                Lifecycle.Event.ON_START -> if (!controller.isVideoRunning()) controller.resumeCamera()
                 else -> Unit
             }
         }
@@ -275,6 +281,14 @@ internal fun CameraScreen(
     }
 
     fun capturePhoto() {
+        if (state.captureMode == CaptureMode.DOCUMENT) {
+            viewModel.beginDocumentCapture { reservation ->
+                controller.takePhoto(reservation.id, reservation.file,
+                    onSaved = { viewModel.onDocumentCaptured(reservation.id, onReviewDocument) },
+                    onError = { viewModel.onDocumentFailed(reservation.id, it) })
+            }
+            return
+        }
         viewModel.beginCapture { reservation ->
             val temp = reservation.tempFile
             controller.takePhoto(reservation.id, temp,
@@ -299,6 +313,7 @@ internal fun CameraScreen(
     }
 
     fun startVideoFromLongPress() {
+        if (state.captureMode == CaptureMode.DOCUMENT) return
         if (!audioPermissionGranted) {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
@@ -494,6 +509,7 @@ internal fun CameraScreen(
                                     onVideoStabilizationCapabilityChanged = { supported ->
                                         stabilizationSupported = supported
                                     },
+                                    onDocumentOutline = { documentOutline = it },
                                 )
                             }
                         },
@@ -535,6 +551,17 @@ internal fun CameraScreen(
                     },
                 )
 
+                if (state.captureMode == CaptureMode.DOCUMENT) {
+                    documentOutline?.let { points ->
+                        Canvas(Modifier.fillMaxSize()) {
+                            for (index in 0..3) {
+                                val next = (index + 1) % 4
+                                drawLine(Color(0xFFFFD34E), Offset(points[index * 2], points[index * 2 + 1]),
+                                    Offset(points[next * 2], points[next * 2 + 1]), strokeWidth = 2.dp.toPx())
+                            }
+                        }
+                    }
+                }
                 if (gridEnabled) {
                     Canvas(Modifier.fillMaxSize()) {
                         val lineColor = Color.White.copy(alpha = 0.42f)
@@ -699,6 +726,16 @@ internal fun CameraScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Top,
             ) {
+                if (!state.video.isActive) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        CaptureMode.entries.forEach { mode ->
+                            TextButton(onClick = { viewModel.setCaptureMode(mode) }, enabled = !state.controlsLocked) {
+                                Text(if (mode == CaptureMode.PHOTO) "照片" else "文档",
+                                    color = if (state.captureMode == mode) Color(0xFFFFD34E) else Color.White.copy(alpha = 0.7f))
+                            }
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth().height(if (state.video.isActive) 76.dp else 72.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         if (state.video.phase == VideoRecordingPhase.RECORDING || state.video.phase == VideoRecordingPhase.PAUSED) {
@@ -736,11 +773,11 @@ internal fun CameraScreen(
                             Surface(
                                 modifier = Modifier.size(68.dp)
                                     .border(5.dp, Color.White, CircleShape)
-                                    .semantics { contentDescription = "拍照，长按录像" }
+                                    .semantics { contentDescription = if (state.captureMode == CaptureMode.DOCUMENT) "拍摄文档" else "拍照，长按录像" }
                                     .combinedClickable(
                                         enabled = !state.controlsLocked && !state.captureQueueFull && state.category != null,
                                         onClick = ::capturePhoto,
-                                        onLongClick = ::startVideoFromLongPress,
+                                        onLongClick = if (state.captureMode == CaptureMode.PHOTO) ::startVideoFromLongPress else null,
                                     ),
                                 shape = CircleShape,
                                 color = if (state.controlsLocked || state.captureQueueFull) Color.Gray else Color.White.copy(alpha = 0.88f),
@@ -823,6 +860,11 @@ internal fun CameraScreen(
                     )
                 }
                 if (state.canRetry) TextButton(onClick = viewModel::retry) { Text("重试保存", color = Color.White) }
+                state.documentDraft?.let { draft ->
+                    if (state.captureMode == CaptureMode.DOCUMENT && !state.controlsLocked) {
+                        TextButton(onClick = { onReviewDocument(draft.id) }) { Text("继续编辑待确认文档", color = Color(0xFFFFD34E)) }
+                    }
+                }
             }
         }
     }

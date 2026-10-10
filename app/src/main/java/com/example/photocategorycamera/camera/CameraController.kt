@@ -24,6 +24,10 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.view.transform.CoordinateTransform
+import com.example.photocategorycamera.document.DocumentAnalyzer
+import com.example.photocategorycamera.document.DocumentProcessor
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
@@ -34,7 +38,6 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.view.PreviewView
 import androidx.camera.video.FileOutputOptions
-import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
@@ -51,7 +54,6 @@ import com.example.photocategorycamera.diagnostics.CaptureEventLog
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import kotlin.math.roundToInt
 
 data class VideoRecordingCallbacks(
     val onStarted: (String, VideoStabilizationStatus, String?) -> Unit,
@@ -66,11 +68,17 @@ data class VideoRecordingCallbacks(
 class CameraController(
     private val context: Context,
     initialVideoStabilizationEnabled: Boolean = true,
+    private val documentProcessor: DocumentProcessor = DocumentProcessor(),
 ) {
     private var provider: ProcessCameraProvider? = null
     private var previewView: PreviewView? = null
     private var lifecycleOwner: LifecycleOwner? = null
     private var imageCapture: ImageCapture? = null
+    private var imageAnalysis: ImageAnalysis? = null
+    private var documentMode = false
+    private var analysisGeneration = 0
+    private var onDocumentOutline: (FloatArray?) -> Unit = {}
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
     private var videoCapture: VideoCapture<Recorder>? = null
     private var camera: Camera? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
@@ -89,7 +97,6 @@ class CameraController(
     private var standaloneLensSwitching = false
     private var standaloneCaptureRotation = Surface.ROTATION_0
     private var cameraEnabled = true
-    private var onCameraReady: (() -> Unit)? = null
     private var sensorTimestampRealtime = false
     private val ordinaryCaptures = ArrayDeque<OrdinaryCapture>()
     private var released = false
@@ -137,6 +144,7 @@ class CameraController(
         onZoomChanged: (Float, Float, Float) -> Unit = { _, _, _ -> },
         onExposureChanged: (Int, Int, Int) -> Unit = { _, _, _ -> },
         onVideoStabilizationCapabilityChanged: (Boolean) -> Unit = {},
+        onDocumentOutline: (FloatArray?) -> Unit = {},
     ) {
         this.previewView = previewView
         this.lifecycleOwner = lifecycleOwner
@@ -145,6 +153,7 @@ class CameraController(
         this.onExposureChanged = onExposureChanged
         this.onError = onError
         this.onVideoStabilizationCapabilityChanged = onVideoStabilizationCapabilityChanged
+        this.onDocumentOutline = onDocumentOutline
         previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         installGestures(previewView)
@@ -161,10 +170,12 @@ class CameraController(
         }, ContextCompat.getMainExecutor(context))
     }
 
-    private fun bindPhotoMode() {
+    private fun bindPhotoMode(withAnalysis: Boolean = documentMode) {
         val owner = lifecycleOwner ?: return
         val view = previewView ?: return
         val cameraProvider = provider ?: return
+        stopAnalysis()
+        val generation = analysisGeneration
         val resolutionSelector = ResolutionSelector.Builder()
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
             .build()
@@ -180,12 +191,39 @@ class CameraController(
             .setTargetRotation(targetRotation)
         Camera2Interop.Extender(imageCaptureBuilder).setSessionCaptureCallback(stillCaptureEvents)
         imageCapture = imageCaptureBuilder.build()
+        imageAnalysis = if (withAnalysis) {
+            ImageAnalysis.Builder()
+                .setResolutionSelector(resolutionSelector)
+                .setTargetRotation(Surface.ROTATION_0)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build().also { analysis ->
+                    analysis.setAnalyzer(analysisExecutor, DocumentAnalyzer(documentProcessor,
+                        onResult = { result ->
+                            mainHandler.post {
+                                if (generation != analysisGeneration || released || !documentMode || !cameraEnabled) return@post
+                                val quad = result.quad
+                                val target = view.outputTransform
+                                if (quad == null || target == null) onDocumentOutline(null)
+                                else {
+                                    val points = quad.cropCoordinates(result.crop.width(), result.crop.height())
+                                    runCatching { CoordinateTransform(result.transform, target).mapPoints(points) }
+                                        .onSuccess { onDocumentOutline(points) }
+                                        .onFailure { onDocumentOutline(null) }
+                                }
+                            }
+                        },
+                        onError = { error -> mainHandler.post {
+                            if (generation == analysisGeneration && !released) { onDocumentOutline(null); onError(error) }
+                        } },
+                    ))
+                }
+        } else null
         videoCapture = null
         val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
         val useCaseGroup = UseCaseGroup.Builder()
             .addUseCase(preview)
             .addUseCase(imageCapture!!)
-            .apply { videoCapture?.let(::addUseCase) }
+            .apply { imageAnalysis?.let(::addUseCase) }
             // Photo geometry must not inherit the still-animating 9:16 video view.
             .setViewPort(
                 androidx.camera.core.ViewPort.Builder(android.util.Rational(3, 4), Surface.ROTATION_0)
@@ -220,14 +258,28 @@ class CameraController(
         }
         runCatching { notifyVideoStabilizationCapability(boundCamera.cameraInfo) }
             .onFailure { onVideoStabilizationCapabilityChanged(false) }
-        onCameraReady?.also { callback ->
-            onCameraReady = null
-            mainHandler.post(callback)
-        }
     }
 
     private fun bindPhotoModeIfEnabled() {
-        if (cameraEnabled && !released) bindPhotoMode()
+        if (!cameraEnabled || released) return
+        try { bindPhotoMode() } catch (error: Exception) {
+            if (!documentMode) throw error
+            bindPhotoMode(withAnalysis = false)
+            onError("当前相机组合不支持实时边框，仍可拍摄后手动调整")
+        }
+    }
+
+    fun setDocumentMode(enabled: Boolean) {
+        if (standaloneVideoRunning || released || documentMode == enabled) return
+        documentMode = enabled
+        runCatching(::bindPhotoModeIfEnabled).onFailure { onError(it.message ?: "相机模式切换失败") }
+    }
+
+    private fun stopAnalysis() {
+        analysisGeneration++
+        imageAnalysis?.clearAnalyzer()
+        imageAnalysis = null
+        onDocumentOutline(null)
     }
 
     fun takePhoto(taskId: String, file: File, onSaved: (File) -> Unit, onError: (String) -> Unit) {
@@ -261,6 +313,10 @@ class CameraController(
         fileSizeLimitBytes: Long,
         callbacks: VideoRecordingCallbacks,
     ) {
+        if (documentMode) {
+            callbacks.onError(file, "文档模式只支持静态拍摄")
+            return
+        }
         if (standaloneVideoRunning || activeRecording != null) {
             callbacks.onError(file, "相机正在处理上一项拍摄")
             return
@@ -370,6 +426,7 @@ class CameraController(
         reuseVideoCapture: Boolean = false,
         stabilizationEnabled: Boolean = false,
     ) {
+        stopAnalysis()
         val previewSelector = ResolutionSelector.Builder()
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .build()
@@ -518,9 +575,10 @@ class CameraController(
         if (!standaloneVideoRunning) videoStabilizationEnabled = enabled
     }
 
-    /** Releases camera use cases while the document editor is visible. */
+    /** Stops document analysis and camera use cases when document capture leaves the foreground. */
     fun suspendCamera() {
         cameraEnabled = false
+        stopAnalysis()
         zoomAnimator?.cancel()
         provider?.unbindAll()
         camera = null
@@ -528,16 +586,10 @@ class CameraController(
         videoCapture = null
     }
 
-    /** Rebinds camera use cases after leaving the document editor. */
-    fun resumeCamera(onReady: (() -> Unit)? = null) {
-        if (released) return
-        if (cameraEnabled && camera != null) {
-            onReady?.let { callback -> mainHandler.post(callback) }
-            return
-        }
-        this.onCameraReady = onReady
+    fun resumeCamera() {
+        if (released || (cameraEnabled && camera != null)) return
         cameraEnabled = true
-        bindPhotoModeIfEnabled()
+        runCatching(::bindPhotoModeIfEnabled).onFailure { onError(it.message ?: "相机恢复失败") }
     }
 
     fun switchLens(): Boolean {
@@ -647,6 +699,8 @@ class CameraController(
 
     fun release() {
         released = true
+        stopAnalysis()
+        analysisExecutor.shutdown()
         zoomAnimator?.cancel()
         zoomAnimator = null
         activeRecording?.stop()

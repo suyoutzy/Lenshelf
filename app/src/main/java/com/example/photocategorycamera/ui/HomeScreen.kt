@@ -76,9 +76,24 @@ internal fun HomeScreen(
     onSettings: () -> Unit,
     onRetry: () -> Unit,
     onDiscardFailed: () -> Unit,
+    onResumeDocument: (String) -> Unit,
+    onDiscardDocument: (String) -> Unit,
 ) {
     var introExpanded by rememberSaveable { mutableStateOf(false) }
     var confirmDiscardFailed by rememberSaveable { mutableStateOf(false) }
+    var confirmDiscardDocument by rememberSaveable { mutableStateOf(false) }
+    if (confirmDiscardDocument) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscardDocument = false },
+            title = { Text("丢弃待确认文档？") },
+            text = { Text("将删除这张未归档文档的临时原图，不影响已保存照片。") },
+            confirmButton = { TextButton(onClick = {
+                confirmDiscardDocument = false
+                state.documentDraft?.let { onDiscardDocument(it.id) }
+            }) { Text("丢弃") } },
+            dismissButton = { TextButton(onClick = { confirmDiscardDocument = false }) { Text("取消") } },
+        )
+    }
     if (confirmDiscardFailed) {
         AlertDialog(
             onDismissRequest = { confirmDiscardFailed = false },
@@ -134,6 +149,20 @@ internal fun HomeScreen(
             Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            state.documentDraft?.let { draft ->
+                item(key = "document-draft") {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("待确认文档", style = MaterialTheme.typography.titleMedium)
+                            Text("分类：" + draft.categoryName + " · 尚未归档")
+                            Row {
+                                TextButton(onClick = { onResumeDocument(draft.id) }) { Text("继续编辑") }
+                                TextButton(onClick = { confirmDiscardDocument = true }) { Text("丢弃") }
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),

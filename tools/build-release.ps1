@@ -62,13 +62,18 @@ try {
         throw "Signed APK already exists; move it aside before rebuilding: $signed"
     }
 
-    & $zipalign -p 4 $stagedUnsigned $aligned
+    # Preserve 16 KiB ZIP alignment for bundled native libraries before signing.
+    & $zipalign -P 16 4 $stagedUnsigned $aligned
     if ($LASTEXITCODE -ne 0) { throw 'APK alignment failed.' }
+    & $zipalign -c -P 16 4 $aligned
+    if ($LASTEXITCODE -ne 0) { throw 'APK native-library alignment verification failed.' }
     Write-Host 'Enter your release keystore password when apksigner prompts.'
     & $apksigner sign --ks $KeystorePath --ks-key-alias lenshelf --out $stagedSigned $aligned
     if ($LASTEXITCODE -ne 0) { throw 'APK signing failed.' }
     & $apksigner verify --verbose --print-certs $stagedSigned
     if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }
+    & $zipalign -c -P 16 4 $stagedSigned
+    if ($LASTEXITCODE -ne 0) { throw 'Signed APK native-library alignment verification failed.' }
     Copy-Item -LiteralPath $stagedSigned -Destination $signed
     Get-FileHash -LiteralPath $signed -Algorithm SHA256 | Format-List Path, Hash
     Write-Host "Release APK ready: $signed"
