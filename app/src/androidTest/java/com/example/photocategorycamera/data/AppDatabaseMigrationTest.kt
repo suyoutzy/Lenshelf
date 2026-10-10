@@ -29,6 +29,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_1_2,
                 AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
             ).build()
         try {
             val cursor = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -62,6 +63,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_1_2,
                 AppDatabase.MIGRATION_2_3,
                 AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
             ).build()
         try {
             val categories = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -72,6 +74,37 @@ class AppDatabaseMigrationTest {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'custom_presets'",
             )
             presetTable.use { assertEquals(true, it.moveToFirst()); assertEquals(0, it.getInt(0)) }
+        } finally { database.close() }
+    }
+
+    @Test fun migrate4To5PreservesTargetsAndConvertsLegacyKind() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(name)
+        context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).apply {
+            execSQL("CREATE TABLE categories (id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE, sortOrder INTEGER NOT NULL, isActive INTEGER NOT NULL, createdAt INTEGER NOT NULL)")
+            execSQL("CREATE UNIQUE INDEX index_categories_name ON categories (name)")
+            execSQL("CREATE TABLE capture_tasks (id TEXT NOT NULL PRIMARY KEY, tempPath TEXT NOT NULL, categoryId TEXT NOT NULL, categoryName TEXT NOT NULL, rootTreeUri TEXT NOT NULL, mediaKind TEXT NOT NULL, stage TEXT NOT NULL, targetUri TEXT, error TEXT, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+            execSQL("CREATE INDEX index_capture_tasks_stage ON capture_tasks (stage)")
+            execSQL("CREATE INDEX index_capture_tasks_createdAt ON capture_tasks (createdAt)")
+            execSQL("INSERT INTO categories VALUES ('one', '测试', 0, 1, 123)")
+            execSQL("INSERT INTO capture_tasks VALUES ('legacy', '/test/pending.jpg', 'one', '测试', 'content://fixture/root', 'MOTION_PHOTO', 'RETRY', 'content://fixture/target', NULL, 1, 1)")
+            execSQL("PRAGMA user_version = 4")
+            close()
+        }
+        val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
+            .addMigrations(AppDatabase.MIGRATION_4_5).build()
+        try {
+            database.openHelper.readableDatabase.query("SELECT mediaKind, tempPath, rootTreeUri, targetUri, stage FROM capture_tasks WHERE id = 'legacy'").use {
+                assertEquals(true, it.moveToFirst())
+                assertEquals("PHOTO", it.getString(0))
+                assertEquals("/test/pending.jpg", it.getString(1))
+                assertEquals("content://fixture/root", it.getString(2))
+                assertEquals("content://fixture/target", it.getString(3))
+                assertEquals("RETRY", it.getString(4))
+            }
+            database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM document_drafts").use {
+                assertEquals(true, it.moveToFirst()); assertEquals(0, it.getInt(0))
+            }
         } finally { database.close() }
     }
 }

@@ -5,12 +5,28 @@ import androidx.room.migration.Migration
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [CategoryEntity::class, CaptureTaskEntity::class], version = 4, exportSchema = false)
+@Database(entities = [CategoryEntity::class, CaptureTaskEntity::class, DocumentDraftEntity::class], version = 5, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun categoryDao(): CategoryDao
     abstract fun captureTaskDao(): CaptureTaskDao
+    abstract fun documentDraftDao(): DocumentDraftDao
 
     companion object {
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("UPDATE capture_tasks SET mediaKind = 'PHOTO' WHERE mediaKind = 'MOTION_PHOTO'")
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS document_drafts (
+                        id TEXT NOT NULL PRIMARY KEY, sourcePath TEXT NOT NULL,
+                        categoryId TEXT NOT NULL, categoryName TEXT NOT NULL, rootTreeUri TEXT NOT NULL,
+                        quadValue TEXT NOT NULL, effectValue TEXT NOT NULL, quarterTurns INTEGER NOT NULL,
+                        stage TEXT NOT NULL, editingSlot INTEGER, replacementPath TEXT, createdAt INTEGER NOT NULL
+                    )""",
+                )
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_document_drafts_editingSlot ON document_drafts (editingSlot)")
+            }
+        }
+
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL(

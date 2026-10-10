@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.core.DataStore
 import com.example.photocategorycamera.domain.PendingCapture
 import com.example.photocategorycamera.domain.MediaKind
 import com.example.photocategorycamera.domain.FolderOpenMode
@@ -27,7 +28,7 @@ data class AppSettings(
     val videoStabilizationEnabled: Boolean = true,
 )
 
-class SettingsRepository(private val context: Context) {
+class SettingsRepository(context: Context, private val store: DataStore<Preferences> = context.settingsDataStore) {
     private object Keys {
         val rootUri = stringPreferencesKey("root_uri")
         val rootName = stringPreferencesKey("root_name")
@@ -41,12 +42,12 @@ class SettingsRepository(private val context: Context) {
         val videoStabilizationEnabled = booleanPreferencesKey("video_stabilization_enabled")
     }
 
-    val settings: Flow<AppSettings> = context.settingsDataStore.data
+    val settings: Flow<AppSettings> = store.data
         .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
         .map(::toSettings)
 
     suspend fun setStorageRoot(root: StorageRoot) {
-        context.settingsDataStore.edit {
+        store.edit {
             it[Keys.rootUri] = root.treeUri
             it[Keys.rootName] = root.displayName
             it[Keys.rootAuthorizedAt] = root.authorizedAt
@@ -54,7 +55,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setPendingCapture(pending: PendingCapture) {
-        context.settingsDataStore.edit {
+        store.edit {
             it[Keys.pendingPath] = pending.tempPath
             it[Keys.pendingCategoryId] = pending.categoryId
             it[Keys.pendingCategoryName] = pending.categoryName
@@ -63,7 +64,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun clearPendingCapture() {
-        context.settingsDataStore.edit {
+        store.edit {
             it.remove(Keys.pendingPath)
             it.remove(Keys.pendingCategoryId)
             it.remove(Keys.pendingCategoryName)
@@ -72,16 +73,16 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setFolderOpenMode(mode: FolderOpenMode) {
-        context.settingsDataStore.edit { it[Keys.folderOpenMode] = mode.name }
+        store.edit { it[Keys.folderOpenMode] = mode.name }
     }
 
     suspend fun setCameraGridEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.cameraGridEnabled] = enabled }
+        store.edit { it[Keys.cameraGridEnabled] = enabled }
     }
 
     /** Idempotent upgrade cleanup; no removed feature remains in runtime settings. */
     suspend fun migrateObsoleteCameraPreferences() {
-        context.settingsDataStore.edit {
+        store.edit {
             it.remove(booleanPreferencesKey("motion_photo_enabled"))
             it.remove(booleanPreferencesKey("pending_is_motion_photo"))
             if (it[Keys.pendingMediaKind] == "MOTION_PHOTO") it[Keys.pendingMediaKind] = MediaKind.PHOTO.name
@@ -89,7 +90,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setVideoStabilizationEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.videoStabilizationEnabled] = enabled }
+        store.edit { it[Keys.videoStabilizationEnabled] = enabled }
     }
 
     private fun toSettings(preferences: Preferences): AppSettings {

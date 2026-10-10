@@ -3,4 +3,5 @@
     <exclude domain="database" path="." />
     <exclude domain="sharedpref" path="." />
     <exclude domain="file" path="capture-recovery/" />
+    <exclude domain="file" path="document-drafts/" />
 </full-backup-content>

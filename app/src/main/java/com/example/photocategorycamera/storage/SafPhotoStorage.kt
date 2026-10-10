@@ -230,7 +230,6 @@ class SafPhotoStorage(
                     }
                 }.getOrDefault(false)
                 if (alreadyComplete) {
-                    tempFile.delete()
                     return@withContext CaptureResult(category.id, targetUri.toString(), CaptureStatus.SAVED, warning = validation.warning)
                 }
             }
@@ -239,7 +238,6 @@ class SafPhotoStorage(
                 output.flush()
             } ?: throw IOException("无法打开目标媒体输出流")
             verifyCopiedContent(tempFile, target)
-            tempFile.delete()
             CaptureResult(category.id, targetUri.toString(), CaptureStatus.SAVED, warning = validation.warning)
         } catch (error: Exception) {
             CaptureResult(category.id, targetUri.toString(), CaptureStatus.RETRY_AVAILABLE,

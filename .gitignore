@@ -18,6 +18,8 @@ __pycache__/
 *.aab
 *.jks
 *.keystore
+*.p12
+*.pfx
 /keystore.properties
 .DS_Store
 Thumbs.db

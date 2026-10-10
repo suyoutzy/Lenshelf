@@ -6,6 +6,8 @@ import com.example.photocategorycamera.data.AppDatabase
 import com.example.photocategorycamera.data.CategoryRepository
 import com.example.photocategorycamera.data.CaptureTaskRepository
 import com.example.photocategorycamera.data.SettingsRepository
+import com.example.photocategorycamera.data.DocumentDraftRepository
+import com.example.photocategorycamera.document.DocumentProcessor
 import com.example.photocategorycamera.storage.MediaStorage
 import com.example.photocategorycamera.storage.SafPhotoStorage
 
@@ -20,10 +22,13 @@ class AppContainer(context: Context) {
         AppDatabase.MIGRATION_1_2,
         AppDatabase.MIGRATION_2_3,
         AppDatabase.MIGRATION_3_4,
+        AppDatabase.MIGRATION_4_5,
     ).build()
 
     val categories = CategoryRepository(database.categoryDao())
     val settings = SettingsRepository(appContext)
     val mediaStorage: MediaStorage = SafPhotoStorage(appContext, settings)
-    val captureTasks = CaptureTaskRepository(appContext, database.captureTaskDao(), settings, mediaStorage)
+    val documentProcessor = DocumentProcessor()
+    val captureTasks = CaptureTaskRepository(appContext, database, settings, mediaStorage)
+    val documents = DocumentDraftRepository(appContext, database, documentProcessor, captureTasks)
 }

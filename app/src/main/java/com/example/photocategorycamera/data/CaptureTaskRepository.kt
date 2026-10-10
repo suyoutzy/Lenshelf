@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import androidx.room.withTransaction
 import com.example.photocategorycamera.diagnostics.CaptureEventLog
 import com.example.photocategorycamera.domain.CaptureStatus
 import com.example.photocategorycamera.domain.Category
@@ -14,6 +15,7 @@ import com.example.photocategorycamera.storage.MediaStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -26,21 +28,44 @@ data class CaptureReservation(val id: String, val tempFile: File)
 
 class CaptureTaskRepository(
     private val context: Context,
-    private val dao: CaptureTaskDao,
+    private val database: AppDatabase,
     private val settings: SettingsRepository,
     private val storage: MediaStorage,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val dao = database.captureTaskDao()
+    private val documentDao = database.documentDraftDao()
     private val reservationMutex = Mutex()
     private val savingMutex = Mutex()
     val outstanding: Flow<List<CaptureTaskEntity>> = dao.observeOutstanding()
 
-    init {
-        scope.launch {
-            settings.migrateObsoleteCameraPreferences()
-            migrateLegacyPending()
-            resumeInterruptedTasks()
-            processReady()
+    private val initialization = scope.async {
+        settings.migrateObsoleteCameraPreferences()
+        migrateLegacyPending()
+        resumeInterruptedTasks()
+    }
+
+    init { scope.launch { initialization.await(); processReady() } }
+
+    /** The draft-to-queue transition is atomic and uses its stable ID exactly once. */
+    suspend fun enqueueDocument(id: String, processed: File): Result<Unit> = runCatching {
+        initialization.await()
+        reservationMutex.withLock {
+            database.withTransaction {
+                val draft = checkNotNull(documentDao.find(id)) { "文档草稿已不存在" }
+                if (draft.stage == "QUEUED") return@withTransaction
+                check(draft.stage == "EDITING" && draft.replacementPath == null) { "文档仍在拍摄中" }
+                check(dao.countOutstanding() < MAX_OUTSTANDING) { "保存队列已满，请稍后确认保存" }
+                check(isRecoverableJpeg(processed)) { "处理后的文档图片无效" }
+                val now = System.currentTimeMillis()
+                check(dao.insert(CaptureTaskEntity(
+                    id, processed.absolutePath, draft.categoryId, draft.categoryName, draft.rootTreeUri,
+                    MediaKind.PHOTO.name, CaptureTaskStage.READY.name, createdAt = now, updatedAt = now,
+                )) != -1L) { "文档保存任务已存在" }
+                documentDao.update(draft.copy(stage = "QUEUED", editingSlot = null))
+            }
+            scope.launch { processReady() }
+            Unit
         }
     }
 
@@ -49,8 +74,9 @@ class CaptureTaskRepository(
         root: StorageRoot,
         kind: MediaKind,
         createTempFile: () -> File,
-    ): Result<CaptureReservation> = reservationMutex.withLock {
-        runCatching {
+    ): Result<CaptureReservation> = runCatching {
+        initialization.await()
+        reservationMutex.withLock {
             check(dao.countOutstanding() < MAX_OUTSTANDING) { "待处理任务已满，请等待保存完成" }
             val now = System.currentTimeMillis()
             val id = UUID.randomUUID().toString()
@@ -81,6 +107,7 @@ class CaptureTaskRepository(
 
     fun markReady(id: String, kind: MediaKind) {
         scope.launch {
+            initialization.await()
             dao.markReady(id, kind.name, now = System.currentTimeMillis())
             CaptureEventLog.record(context, "task_ready", id, values = mapOf("mediaKind" to kind.name))
             processReady()
@@ -97,6 +124,7 @@ class CaptureTaskRepository(
 
     fun retryAll() {
         scope.launch {
+            initialization.await()
             dao.retryAll(System.currentTimeMillis())
             processReady()
         }
@@ -107,13 +135,22 @@ class CaptureTaskRepository(
         failed.forEach { task ->
             File(task.tempPath).delete()
             dao.delete(task.id)
+            clearDocumentMaterials(task.id)
             CaptureEventLog.record(context, "failed_task_discarded", task.id)
         }
         failed.size
     }
 
     suspend fun hasOutstandingForCategory(categoryId: String): Boolean =
-        dao.countOutstandingForCategory(categoryId) > 0
+        dao.countOutstandingForCategory(categoryId) > 0 || documentDao.countForCategory(categoryId) > 0
+
+    private suspend fun clearDocumentMaterials(id: String) {
+        documentDao.find(id)?.let { draft ->
+            File(draft.sourcePath).delete()
+            draft.replacementPath?.let { File(it).delete() }
+            documentDao.delete(id)
+        }
+    }
 
     private suspend fun processReady() = savingMutex.withLock {
         while (true) {
@@ -145,6 +182,8 @@ class CaptureTaskRepository(
                         values = mapOf("targetUri" to task.targetUri, "mediaKind" to task.mediaKind),
                     )
                     dao.delete(task.id)
+                    File(task.tempPath).delete()
+                    clearDocumentMaterials(task.id)
                 }
                 CaptureStatus.RETRY_AVAILABLE -> dao.updateProgress(
                     task.id,

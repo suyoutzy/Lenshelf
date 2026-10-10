@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface CaptureTaskDao {
+    @Query("SELECT * FROM capture_tasks WHERE id = :id")
+    suspend fun find(id: String): CaptureTaskEntity?
+
     @Query("SELECT * FROM capture_tasks ORDER BY createdAt ASC")
     fun observeOutstanding(): Flow<List<CaptureTaskEntity>>
 
