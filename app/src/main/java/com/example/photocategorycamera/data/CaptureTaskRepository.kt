@@ -20,8 +20,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
-import java.io.RandomAccessFile
-import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 data class CaptureReservation(val id: String, val tempFile: File)
@@ -39,6 +37,7 @@ class CaptureTaskRepository(
 
     init {
         scope.launch {
+            settings.migrateObsoleteCameraPreferences()
             migrateLegacyPending()
             resumeInterruptedTasks()
             processReady()
@@ -190,9 +189,7 @@ class CaptureTaskRepository(
                 val file = File(task.tempPath)
                 val recoveredKind = when (task.kind) {
                     MediaKind.VIDEO -> if (isRecoverableVideo(file)) MediaKind.VIDEO else null
-                    MediaKind.PHOTO, MediaKind.MOTION_PHOTO -> if (isRecoverableJpeg(file)) {
-                        if (containsMotionPhotoMetadata(file)) MediaKind.MOTION_PHOTO else MediaKind.PHOTO
-                    } else null
+                    MediaKind.PHOTO -> if (isRecoverableJpeg(file)) MediaKind.PHOTO else null
                 }
                 if (recoveredKind != null) {
                     dao.markReady(task.id, recoveredKind.name, now = System.currentTimeMillis())
@@ -227,14 +224,6 @@ class CaptureTaskRepository(
         BitmapFactory.decodeFile(file.absolutePath, options)
         return options.outWidth > 0 && options.outHeight > 0
     }
-
-    private fun containsMotionPhotoMetadata(file: File): Boolean = runCatching {
-        val prefixSize = minOf(file.length(), 256L * 1024L).toInt()
-        val prefix = ByteArray(prefixSize)
-        RandomAccessFile(file, "r").use { it.readFully(prefix) }
-        val xmp = String(prefix, StandardCharsets.ISO_8859_1)
-        xmp.contains("GCamera:MotionPhoto=\"1\"") && xmp.contains("GCamera:MicroVideoOffset=\"")
-    }.getOrDefault(false)
 
     private fun isRecoverableVideo(file: File): Boolean {
         if (!file.isFile || file.length() <= 8L) return false

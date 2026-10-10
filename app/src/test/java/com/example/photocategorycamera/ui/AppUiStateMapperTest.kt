@@ -70,7 +70,6 @@ class AppUiStateMapperTest {
                 storageRoot = root,
                 folderOpenMode = FolderOpenMode.XIAOMI,
                 cameraGridEnabled = true,
-                motionPhotoEnabled = true,
                 videoStabilizationEnabled = false,
             ),
             tasks = emptyList(),
@@ -81,7 +80,6 @@ class AppUiStateMapperTest {
         assertFalse(base.hasPendingCapture)
         assertEquals(FolderOpenMode.XIAOMI, base.folderOpenMode)
         assertTrue(base.cameraGridEnabled)
-        assertTrue(base.motionPhotoEnabled)
         assertFalse(base.videoStabilizationEnabled)
         assertEquals(
             mapOf(category.id to 7),

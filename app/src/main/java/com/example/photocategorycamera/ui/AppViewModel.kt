@@ -248,10 +248,6 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch { container.settings.setCameraGridEnabled(enabled) }
     }
 
-    fun setMotionPhotoEnabled(enabled: Boolean) {
-        viewModelScope.launch { container.settings.setMotionPhotoEnabled(enabled) }
-    }
-
     fun setVideoStabilizationEnabled(enabled: Boolean) {
         viewModelScope.launch { container.settings.setVideoStabilizationEnabled(enabled) }
     }

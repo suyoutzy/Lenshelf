@@ -10,8 +10,7 @@ object PhotoFileNameGenerator {
     @Synchronized
     fun baseName(
         nowMillis: Long = System.currentTimeMillis(),
-        motionPhoto: Boolean = false,
-    ): String = "IMG_${formatter.format(Date(nowMillis))}${if (motionPhoto) "_MP" else ""}.jpg"
+    ): String = "IMG_${formatter.format(Date(nowMillis))}.jpg"
 
     @Synchronized
     fun baseName(
@@ -19,7 +18,6 @@ object PhotoFileNameGenerator {
         nowMillis: Long = System.currentTimeMillis(),
     ): String = when (mediaKind) {
         MediaKind.PHOTO -> baseName(nowMillis)
-        MediaKind.MOTION_PHOTO -> baseName(nowMillis, motionPhoto = true)
         MediaKind.VIDEO -> "VID_${formatter.format(Date(nowMillis))}.mp4"
     }
 

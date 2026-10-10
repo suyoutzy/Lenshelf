@@ -65,7 +65,6 @@ data class VideoRecordingCallbacks(
 @SuppressLint("UnsafeOptInUsageError")
 class CameraController(
     private val context: Context,
-    initialMotionPhotoEnabled: Boolean = false,
     initialVideoStabilizationEnabled: Boolean = true,
 ) {
     private var provider: ProcessCameraProvider? = null
@@ -82,7 +81,6 @@ class CameraController(
     private var targetRotation = Surface.ROTATION_0
     private var zoomAnimator: ValueAnimator? = null
     private var observedZoomState: LiveData<ZoomState>? = null
-    private var motionPhotoEnabled = initialMotionPhotoEnabled
     private var videoStabilizationEnabled = initialVideoStabilizationEnabled
     private var activeVideoStabilizationStatus = VideoStabilizationStatus.DISABLED_BY_USER
     private var activeRecording: Recording? = null
@@ -90,17 +88,14 @@ class CameraController(
     private var standaloneVideoPaused = false
     private var standaloneLensSwitching = false
     private var standaloneCaptureRotation = Surface.ROTATION_0
-    private var liveCaptureRunning = false
     private var cameraEnabled = true
     private var onCameraReady: (() -> Unit)? = null
     private var sensorTimestampRealtime = false
     private val ordinaryCaptures = ArrayDeque<OrdinaryCapture>()
     private var released = false
     private var onError: (String) -> Unit = {}
-    private var onMotionPhotoChanged: (Boolean) -> Unit = {}
     private var onVideoStabilizationCapabilityChanged: (Boolean) -> Unit = {}
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val ioExecutor = Executors.newSingleThreadExecutor()
 
     private data class OrdinaryCapture(
         val taskId: String,
@@ -141,7 +136,6 @@ class CameraController(
         onFocusTap: (Float, Float) -> Unit = { _, _ -> },
         onZoomChanged: (Float, Float, Float) -> Unit = { _, _, _ -> },
         onExposureChanged: (Int, Int, Int) -> Unit = { _, _, _ -> },
-        onMotionPhotoChanged: (Boolean) -> Unit = {},
         onVideoStabilizationCapabilityChanged: (Boolean) -> Unit = {},
     ) {
         this.previewView = previewView
@@ -150,7 +144,6 @@ class CameraController(
         this.onZoomChanged = onZoomChanged
         this.onExposureChanged = onExposureChanged
         this.onError = onError
-        this.onMotionPhotoChanged = onMotionPhotoChanged
         this.onVideoStabilizationCapabilityChanged = onVideoStabilizationCapabilityChanged
         previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -161,8 +154,8 @@ class CameraController(
             runCatching {
                 provider = future.get()
                 if (cameraEnabled) {
-                    if (previewView.isLaidOut) bindWithMotionFallback()
-                    else previewView.doOnLayout { if (cameraEnabled) bindWithMotionFallback() }
+                    if (previewView.isLaidOut) bindPhotoModeIfEnabled()
+                    else previewView.doOnLayout { if (cameraEnabled) bindPhotoModeIfEnabled() }
                 }
             }.onFailure { onError(it.message ?: "相机初始化失败") }
         }, ContextCompat.getMainExecutor(context))
@@ -187,21 +180,7 @@ class CameraController(
             .setTargetRotation(targetRotation)
         Camera2Interop.Extender(imageCaptureBuilder).setSessionCaptureCallback(stillCaptureEvents)
         imageCapture = imageCaptureBuilder.build()
-        videoCapture = if (motionPhotoEnabled) {
-            val qualitySelector = QualitySelector.from(
-                Quality.HD,
-                FallbackStrategy.lowerQualityOrHigherThan(Quality.HD),
-            )
-            val recorder = Recorder.Builder()
-                .setAspectRatio(AspectRatio.RATIO_4_3)
-                .setQualitySelector(qualitySelector)
-                .build()
-            VideoCapture.Builder(recorder)
-                .setTargetRotation(targetRotation)
-                .build()
-        } else {
-            null
-        }
+        videoCapture = null
         val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
         val useCaseGroup = UseCaseGroup.Builder()
             .addUseCase(preview)
@@ -247,16 +226,8 @@ class CameraController(
         }
     }
 
-    private fun bindWithMotionFallback() {
-        if (!cameraEnabled || released) return
-        runCatching(::bindPhotoMode).onFailure { firstError ->
-            if (!motionPhotoEnabled) throw firstError
-            motionPhotoEnabled = false
-            onMotionPhotoChanged(false)
-            runCatching(::bindPhotoMode)
-                .onSuccess { onError("当前镜头不支持同时拍照和录制，Live图已关闭") }
-                .onFailure { throw it }
-        }
+    private fun bindPhotoModeIfEnabled() {
+        if (cameraEnabled && !released) bindPhotoMode()
     }
 
     fun takePhoto(taskId: String, file: File, onSaved: (File) -> Unit, onError: (String) -> Unit) {
@@ -285,153 +256,12 @@ class CameraController(
         )
     }
 
-    fun takeMotionPhoto(file: File, onSaved: (File) -> Unit, onError: (String) -> Unit) {
-        val capture = imageCapture
-        val recorder = videoCapture?.output
-        if (!motionPhotoEnabled || capture == null || recorder == null) {
-            onError("Live图尚未就绪")
-            return
-        }
-        if (liveCaptureRunning) {
-            onError("上一张Live图仍在处理中")
-            return
-        }
-        liveCaptureRunning = true
-        val captureRotation = targetRotation
-        capture.targetRotation = captureRotation
-        videoCapture?.targetRotation = captureRotation
-        val videoFile = File(file.parentFile, "${file.nameWithoutExtension}_motion.mp4")
-        var jpegSaved = false
-        var jpegError: String? = null
-        var videoFinalized = false
-        var videoError: String? = null
-        var completionStarted = false
-        var latestDurationUs = 0L
-        var latestDurationObservedAtNanos = 0L
-        var recordingStartedAtNanos = 0L
-        var presentationTimestampUs = 0L
-        val completionDeadline = SystemClock.elapsedRealtime() + LIVE_COMPLETION_TIMEOUT_MS
-        lateinit var tryComplete: () -> Unit
-        fun fail(message: String) {
-            if (completionStarted) return
-            completionStarted = true
-            videoFile.delete()
-            file.delete()
-            liveCaptureRunning = false
-            restoreRotationAfterMotionCapture()
-            onError(message)
-        }
-        tryComplete = completion@{
-            if (released) {
-                videoFile.delete()
-                file.delete()
-                return@completion
-            }
-            if (completionStarted || !videoFinalized) return@completion
-            videoError?.let {
-                fail(it)
-                return@completion
-            }
-            jpegError?.let {
-                fail(it)
-                return@completion
-            }
-            if (!jpegSaved) {
-                if (SystemClock.elapsedRealtime() >= completionDeadline) {
-                    fail("Live图静态照片处理超时")
-                } else {
-                    mainHandler.postDelayed(tryComplete, 100L)
-                }
-                return@completion
-            }
-            completionStarted = true
-            ioExecutor.execute {
-                runCatching {
-                    val boundedPresentationTimestampUs = if (latestDurationUs > 0L) {
-                        presentationTimestampUs.coerceIn(0L, latestDurationUs)
-                    } else {
-                        presentationTimestampUs.coerceAtLeast(0L)
-                    }
-                    MotionPhotoAssembler.assemble(file, videoFile, boundedPresentationTimestampUs)
-                }.onSuccess {
-                    videoFile.delete()
-                    mainHandler.post {
-                        liveCaptureRunning = false
-                        restoreRotationAfterMotionCapture()
-                        onSaved(file)
-                    }
-                }.onFailure { error ->
-                    videoFile.delete()
-                    file.delete()
-                    mainHandler.post {
-                        liveCaptureRunning = false
-                        restoreRotationAfterMotionCapture()
-                        onError(error.message ?: "Live图封装失败")
-                    }
-                }
-            }
-        }
-        val outputOptions = FileOutputOptions.Builder(videoFile).build()
-        val recording = recorder.prepareRecording(context, outputOptions)
-            .start(ContextCompat.getMainExecutor(context)) { event ->
-                when (event) {
-                    is VideoRecordEvent.Start -> {
-                        recordingStartedAtNanos = SystemClock.elapsedRealtimeNanos()
-                        latestDurationUs = event.recordingStats.recordedDurationNanos / 1_000L
-                        latestDurationObservedAtNanos = recordingStartedAtNanos
-                    }
-                    is VideoRecordEvent.Status -> {
-                        latestDurationUs = event.recordingStats.recordedDurationNanos / 1_000L
-                        latestDurationObservedAtNanos = SystemClock.elapsedRealtimeNanos()
-                    }
-                    is VideoRecordEvent.Finalize -> {
-                        latestDurationUs = event.recordingStats.recordedDurationNanos / 1_000L
-                        activeRecording = null
-                        if (released) {
-                            videoFile.delete()
-                            file.delete()
-                            return@start
-                        }
-                        videoFinalized = true
-                        if (event.hasError()) videoError = "Live图视频片段录制失败（${event.error}）"
-                        tryComplete()
-                    }
-                }
-            }
-        activeRecording = recording
-        val shutterRequestedAtNanos = SystemClock.elapsedRealtimeNanos()
-        capture.takePicture(
-            ImageCapture.OutputFileOptions.Builder(file).build(),
-            ContextCompat.getMainExecutor(context),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    presentationTimestampUs = when {
-                        recordingStartedAtNanos > 0L ->
-                            (shutterRequestedAtNanos - recordingStartedAtNanos).coerceAtLeast(0L) / 1_000L
-                        latestDurationObservedAtNanos > 0L -> latestDurationUs
-                        else -> 0L
-                    }
-                    jpegSaved = true
-                    tryComplete()
-                }
-
-                override fun onError(exception: ImageCaptureException) {
-                    jpegError = exception.message ?: "Live图静态照片拍摄失败"
-                    activeRecording?.stop()
-                    tryComplete()
-                }
-            },
-        )
-        mainHandler.postDelayed({ activeRecording?.stop() }, LIVE_TOTAL_DURATION_MS)
-    }
-
-    @SuppressLint("UnsafeOptInUsageError")
     fun startVideo(
         file: File,
         fileSizeLimitBytes: Long,
         callbacks: VideoRecordingCallbacks,
     ) {
-        if (standaloneVideoRunning || liveCaptureRunning || activeRecording != null) {
+        if (standaloneVideoRunning || activeRecording != null) {
             callbacks.onError(file, "相机正在处理上一项拍摄")
             return
         }
@@ -596,7 +426,7 @@ class CameraController(
     }
 
     private fun restorePhotoModeAfterVideo() {
-        runCatching(::bindWithMotionFallback).onFailure {
+        runCatching(::bindPhotoModeIfEnabled).onFailure {
             onError(it.message ?: "录像结束后恢复拍照模式失败")
         }
     }
@@ -688,26 +518,7 @@ class CameraController(
         if (!standaloneVideoRunning) videoStabilizationEnabled = enabled
     }
 
-    fun setMotionPhotoEnabled(enabled: Boolean): Boolean {
-        if (standaloneVideoRunning || liveCaptureRunning || motionPhotoEnabled == enabled) return motionPhotoEnabled
-        activeRecording?.stop()
-        activeRecording = null
-        motionPhotoEnabled = enabled
-        return runCatching {
-            bindWithMotionFallback()
-            onMotionPhotoChanged(motionPhotoEnabled)
-            motionPhotoEnabled
-        }.getOrElse {
-            motionPhotoEnabled = false
-            onMotionPhotoChanged(false)
-            onError(it.message ?: "Live图初始化失败")
-            false
-        }
-    }
-
-    fun isMotionPhotoEnabled(): Boolean = motionPhotoEnabled
-
-    /** Releases CameraX while the Camera2 Live backend owns the physical camera. */
+    /** Releases camera use cases while the document editor is visible. */
     fun suspendCamera() {
         cameraEnabled = false
         zoomAnimator?.cancel()
@@ -717,7 +528,7 @@ class CameraController(
         videoCapture = null
     }
 
-    /** Rebinds CameraX after leaving Live mode. */
+    /** Rebinds camera use cases after leaving the document editor. */
     fun resumeCamera(onReady: (() -> Unit)? = null) {
         if (released) return
         if (cameraEnabled && camera != null) {
@@ -726,7 +537,7 @@ class CameraController(
         }
         this.onCameraReady = onReady
         cameraEnabled = true
-        bindWithMotionFallback()
+        bindPhotoModeIfEnabled()
     }
 
     fun switchLens(): Boolean {
@@ -740,7 +551,7 @@ class CameraController(
         if (available) {
             zoomAnimator?.cancel()
             lensFacing = newLens
-            bindWithMotionFallback()
+            bindPhotoModeIfEnabled()
         }
         return available
     }
@@ -829,14 +640,9 @@ class CameraController(
 
     fun setTargetRotation(rotation: Int) {
         targetRotation = rotation
-        if (liveCaptureRunning || standaloneVideoRunning) return
+        if (standaloneVideoRunning) return
         imageCapture?.targetRotation = rotation
         videoCapture?.targetRotation = rotation
-    }
-
-    private fun restoreRotationAfterMotionCapture() {
-        imageCapture?.targetRotation = targetRotation
-        videoCapture?.targetRotation = targetRotation
     }
 
     fun release() {
@@ -852,7 +658,6 @@ class CameraController(
         camera = null
         imageCapture = null
         videoCapture = null
-        ioExecutor.shutdown()
     }
 
     private fun installGestures(view: PreviewView) {
@@ -893,8 +698,6 @@ class CameraController(
 
     private companion object {
         val VIDEO_FRAME_RATE = android.util.Range(30, 30)
-        const val LIVE_TOTAL_DURATION_MS = 2_100L
-        const val LIVE_COMPLETION_TIMEOUT_MS = 7_000L
         const val MAX_VIDEO_DURATION_MS = 10L * 60L * 1_000L
     }
 }

@@ -24,7 +24,6 @@ data class AppSettings(
     val pendingCapture: PendingCapture? = null,
     val folderOpenMode: FolderOpenMode = FolderOpenMode.SYSTEM,
     val cameraGridEnabled: Boolean = false,
-    val motionPhotoEnabled: Boolean = false,
     val videoStabilizationEnabled: Boolean = true,
 )
 
@@ -36,11 +35,9 @@ class SettingsRepository(private val context: Context) {
         val pendingPath = stringPreferencesKey("pending_path")
         val pendingCategoryId = stringPreferencesKey("pending_category_id")
         val pendingCategoryName = stringPreferencesKey("pending_category_name")
-        val pendingIsMotionPhoto = booleanPreferencesKey("pending_is_motion_photo")
         val pendingMediaKind = stringPreferencesKey("pending_media_kind")
         val folderOpenMode = stringPreferencesKey("folder_open_mode")
         val cameraGridEnabled = booleanPreferencesKey("camera_grid_enabled")
-        val motionPhotoEnabled = booleanPreferencesKey("motion_photo_enabled")
         val videoStabilizationEnabled = booleanPreferencesKey("video_stabilization_enabled")
     }
 
@@ -61,7 +58,6 @@ class SettingsRepository(private val context: Context) {
             it[Keys.pendingPath] = pending.tempPath
             it[Keys.pendingCategoryId] = pending.categoryId
             it[Keys.pendingCategoryName] = pending.categoryName
-            it[Keys.pendingIsMotionPhoto] = pending.isMotionPhoto
             it[Keys.pendingMediaKind] = pending.mediaKind.name
         }
     }
@@ -71,7 +67,6 @@ class SettingsRepository(private val context: Context) {
             it.remove(Keys.pendingPath)
             it.remove(Keys.pendingCategoryId)
             it.remove(Keys.pendingCategoryName)
-            it.remove(Keys.pendingIsMotionPhoto)
             it.remove(Keys.pendingMediaKind)
         }
     }
@@ -84,8 +79,13 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { it[Keys.cameraGridEnabled] = enabled }
     }
 
-    suspend fun setMotionPhotoEnabled(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.motionPhotoEnabled] = enabled }
+    /** Idempotent upgrade cleanup; no removed feature remains in runtime settings. */
+    suspend fun migrateObsoleteCameraPreferences() {
+        context.settingsDataStore.edit {
+            it.remove(booleanPreferencesKey("motion_photo_enabled"))
+            it.remove(booleanPreferencesKey("pending_is_motion_photo"))
+            if (it[Keys.pendingMediaKind] == "MOTION_PHOTO") it[Keys.pendingMediaKind] = MediaKind.PHOTO.name
+        }
     }
 
     suspend fun setVideoStabilizationEnabled(enabled: Boolean) {
@@ -105,7 +105,7 @@ class SettingsRepository(private val context: Context) {
             val name = preferences[Keys.pendingCategoryName] ?: return@let null
             val mediaKind = preferences[Keys.pendingMediaKind]
                 ?.let { stored -> MediaKind.entries.firstOrNull { it.name == stored } }
-                ?: if (preferences[Keys.pendingIsMotionPhoto] == true) MediaKind.MOTION_PHOTO else MediaKind.PHOTO
+                ?: MediaKind.PHOTO
             PendingCapture(path, id, name, mediaKind)
         }
         val folderOpenMode = preferences[Keys.folderOpenMode]
@@ -116,7 +116,6 @@ class SettingsRepository(private val context: Context) {
             pendingCapture = pending,
             folderOpenMode = folderOpenMode,
             cameraGridEnabled = preferences[Keys.cameraGridEnabled] ?: false,
-            motionPhotoEnabled = preferences[Keys.motionPhotoEnabled] ?: false,
             videoStabilizationEnabled = preferences[Keys.videoStabilizationEnabled] ?: true,
         )
     }

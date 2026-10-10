@@ -26,9 +26,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets
 import kotlin.coroutines.coroutineContext
 
 class SafPhotoStorage(
@@ -359,63 +357,7 @@ class SafPhotoStorage(
             valid = isReadableJpeg(file),
             error = "待保存的JPEG不存在或无法解码",
         )
-        MediaKind.MOTION_PHOTO -> validateMotionPhoto(file)
         MediaKind.VIDEO -> validateVideo(file)
-    }
-
-    private fun validateMotionPhoto(file: File): MediaValidation {
-        if (!isReadableJpeg(file)) return MediaValidation(false, error = "Live图静态照片不存在或无法解码")
-        return runCatching {
-            val prefixSize = minOf(file.length(), 256L * 1024L).toInt()
-            val prefix = ByteArray(prefixSize)
-            RandomAccessFile(file, "r").use { input -> input.readFully(prefix) }
-            val xmp = String(prefix, StandardCharsets.ISO_8859_1)
-            val videoLength = Regex("MicroVideoOffset=\"(\\d+)\"").find(xmp)
-                ?.groupValues?.get(1)?.toLongOrNull()
-                ?: return MediaValidation(false, error = "Live图缺少动态片段长度")
-            if (videoLength <= 8L || videoLength >= file.length()) {
-                return MediaValidation(false, error = "Live图动态片段长度无效")
-            }
-            val videoFile = File.createTempFile("verify_motion_", ".mp4", context.cacheDir)
-            try {
-                RandomAccessFile(file, "r").use { input ->
-                    input.seek(file.length() - videoLength)
-                    videoFile.outputStream().buffered().use { output ->
-                        val bytes = ByteArray(64 * 1024)
-                        var remaining = videoLength
-                        while (remaining > 0L) {
-                            val count = input.read(bytes, 0, minOf(bytes.size.toLong(), remaining).toInt())
-                            if (count < 0) throw IOException("Live图动态部分提前结束")
-                            output.write(bytes, 0, count)
-                            remaining -= count
-                        }
-                    }
-                }
-                val extractor = MediaExtractor()
-                try {
-                    extractor.setDataSource(videoFile.absolutePath)
-                    val videoTrack = (0 until extractor.trackCount).firstOrNull { index ->
-                        extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME).orEmpty().startsWith("video/")
-                    } ?: return MediaValidation(false, error = "Live图动态部分没有视频轨")
-                    val trackFormat = extractor.getTrackFormat(videoTrack)
-                    extractor.selectTrack(videoTrack)
-                    val sampleCapacity = if (trackFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
-                        trackFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
-                    } else 1024 * 1024
-                    val sample = ByteBuffer.allocate(sampleCapacity.coerceIn(1024 * 1024, 8 * 1024 * 1024))
-                    if (extractor.readSampleData(sample, 0) < 0 || extractor.sampleTime < 0L) {
-                        return MediaValidation(false, error = "Live图动态部分没有可解码视频帧")
-                    }
-                } finally {
-                    extractor.release()
-                }
-            } finally {
-                videoFile.delete()
-            }
-            MediaValidation(valid = true)
-        }.getOrElse { error ->
-            MediaValidation(false, error = "Live图动态部分无法解析：${error.message ?: error.javaClass.simpleName}")
-        }
     }
 
     private fun validateVideo(file: File): MediaValidation {

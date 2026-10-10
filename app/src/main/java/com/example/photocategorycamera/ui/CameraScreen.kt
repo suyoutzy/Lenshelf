@@ -7,10 +7,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.content.pm.ActivityInfo
-import android.os.Build
 import android.os.SystemClock
 import android.view.OrientationEventListener
-import android.view.TextureView
 import android.view.Surface as AndroidSurface
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -117,8 +115,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.photocategorycamera.camera.CameraController
-import com.example.photocategorycamera.camera.LiveCaptureState
-import com.example.photocategorycamera.camera.LivePhotoController
 import com.example.photocategorycamera.camera.VideoRecordingCallbacks
 import com.example.photocategorycamera.domain.Category
 import com.example.photocategorycamera.domain.CameraOrientation
@@ -129,50 +125,7 @@ import com.example.photocategorycamera.domain.VideoStabilizationStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.math.roundToInt
-
-@Composable
-private fun LiveModeToggle(checked: Boolean, enabled: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    val tint by animateColorAsState(
-        if (checked) Color(0xFFFFD76A) else Color.White,
-        animationSpec = tween(240), label = "liveToggleTint",
-    )
-    val slash by animateFloatAsState(
-        if (checked) 0f else 1f, animationSpec = tween(240), label = "liveToggleSlash",
-    )
-    val turn by animateFloatAsState(
-        if (checked) 0f else -15f, animationSpec = tween(240), label = "liveToggleTurn",
-    )
-    IconToggleButton(
-        checked = checked, onCheckedChange = onCheckedChange, enabled = enabled,
-        modifier = Modifier.size(48.dp).semantics { contentDescription = "Live 图" },
-    ) {
-        Canvas(Modifier.size(28.dp)) {
-            val color = tint.copy(alpha = if (enabled) 1f else 0.38f)
-            rotate(turn) {
-                repeat(24) { index ->
-                    val angle = Math.toRadians(index * 15.0)
-                    drawCircle(
-                        color, radius = size.minDimension * 0.033f,
-                        center = center + Offset(
-                            cos(angle).toFloat() * size.minDimension * 0.45f,
-                            sin(angle).toFloat() * size.minDimension * 0.45f,
-                        ),
-                    )
-                }
-                drawCircle(color, size.minDimension * 0.22f, style = Stroke(width = 2.dp.toPx()))
-            }
-            if (slash > 0f) {
-                val start = Offset(size.width * 0.13f, size.height * 0.13f)
-                val end = start + Offset(size.width * 0.74f, size.height * 0.74f) * slash
-                drawLine(Color.Black, start, end, strokeWidth = 5.dp.toPx(), cap = StrokeCap.Round)
-                drawLine(color, start, end, strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-            }
-        }
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @SuppressLint("SourceLockedOrientationActivity")
@@ -184,8 +137,6 @@ internal fun CameraScreen(
     onOpenDirectory: (Category) -> Unit,
     gridEnabled: Boolean,
     onGridEnabledChanged: (Boolean) -> Unit,
-    motionPhotoEnabled: Boolean,
-    onMotionPhotoEnabledChanged: (Boolean) -> Unit,
     videoStabilizationEnabled: Boolean,
     onVideoStabilizationEnabledChanged: (Boolean) -> Unit,
 ) {
@@ -202,17 +153,9 @@ internal fun CameraScreen(
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         permissionGranted = it
     }
-    var requestingLiveAudio by remember { mutableStateOf(false) }
     val audioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         audioPermissionGranted = it
-        viewModel.reportMessage(
-            if (requestingLiveAudio) {
-                if (it) "麦克风已授权，Live将包含声音" else "麦克风未授权，Live将以无声方式拍摄"
-            } else {
-                if (it) "麦克风已授权，请再次长按快门开始录像" else "录像需要麦克风权限，未开始录制"
-            },
-        )
-        requestingLiveAudio = false
+        viewModel.reportMessage(if (it) "麦克风已授权，请再次长按快门开始录像" else "录像需要麦克风权限，未开始录制")
     }
     LaunchedEffect(Unit) { if (!permissionGranted) permissionLauncher.launch(Manifest.permission.CAMERA) }
     DisposableEffect(activity) {
@@ -231,7 +174,7 @@ internal fun CameraScreen(
     }
 
     val controller = remember {
-        CameraController(context, false, videoStabilizationEnabled)
+        CameraController(context, videoStabilizationEnabled)
     }
     val haptics = LocalHapticFeedback.current
     var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
@@ -246,31 +189,7 @@ internal fun CameraScreen(
     var focusPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var focusSequence by remember { mutableIntStateOf(0) }
     var bottomExposureActive by remember { mutableStateOf(false) }
-    val livePlatformSupported = Build.VERSION.SDK_INT >= 33
-    var livePhotoEnabled by remember { mutableStateOf(motionPhotoEnabled && livePlatformSupported) }
-    var liveState by remember { mutableStateOf(LiveCaptureState()) }
     var previewSize by remember { mutableStateOf(IntSize.Zero) }
-    val liveController = remember(audioPermissionGranted) {
-        LivePhotoController(
-            context = context,
-            audioAllowed = audioPermissionGranted,
-            onState = { liveState = it },
-            onFocusTap = { normalizedX, normalizedY ->
-                focusPoint = normalizedX * previewSize.width to normalizedY * previewSize.height
-                focusSequence++
-            },
-            onZoomChanged = { current, minimum, maximum ->
-                zoomRatio = current
-                minZoomRatio = minimum
-                maxZoomRatio = maximum
-            },
-            onExposureChanged = { current, minimum, maximum ->
-                exposure = current
-                minExposure = minimum
-                maxExposure = maximum
-            },
-        )
-    }
     var stabilizationSupported by remember { mutableStateOf(false) }
     var rotationTarget by remember { mutableStateOf(0f) }
     var leaveAfterVideo by remember { mutableStateOf(false) }
@@ -298,17 +217,6 @@ internal fun CameraScreen(
         ZoomPresetSelector.forRange(minZoomRatio, maxZoomRatio)
     }
     val exposureSupported = maxExposure > minExposure
-    val liveBackendActive = livePhotoEnabled && !state.video.isActive
-
-    LaunchedEffect(liveBackendActive) {
-        if (liveBackendActive) controller.suspendCamera() else controller.resumeCamera()
-    }
-    LaunchedEffect(livePhotoEnabled) {
-        if (livePhotoEnabled && !audioPermissionGranted) {
-            requestingLiveAudio = true
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
 
     LaunchedEffect(videoStabilizationEnabled) {
         controller.setVideoStabilizationEnabled(videoStabilizationEnabled)
@@ -337,7 +245,6 @@ internal fun CameraScreen(
                 val filtered = orientationFilter.update(orientation, SystemClock.elapsedRealtime()) ?: return
                 val (captureRotation, visualRotation) = cameraRotationFor(filtered)
                 controller.setTargetRotation(captureRotation)
-                liveController.setTargetRotation(captureRotation)
                 rotationTarget = visualRotation
             }
         }
@@ -345,11 +252,7 @@ internal fun CameraScreen(
         onDispose { orientationListener.disable() }
     }
     DisposableEffect(controller) { onDispose { controller.release() } }
-    DisposableEffect(liveController) { onDispose { liveController.close() } }
-    LaunchedEffect(liveState.warning) {
-        liveState.warning?.let(viewModel::reportMessage)
-    }
-    DisposableEffect(lifecycleOwner, controller, liveController, liveBackendActive) {
+    DisposableEffect(lifecycleOwner, controller) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
@@ -357,9 +260,7 @@ internal fun CameraScreen(
                         viewModel.markVideoFinalizing()
                         controller.stopVideo()
                     }
-                    if (liveBackendActive) liveController.pauseForLifecycle()
                 }
-                Lifecycle.Event.ON_START -> if (liveBackendActive) liveController.resumeForLifecycle()
                 else -> Unit
             }
         }
@@ -376,25 +277,9 @@ internal fun CameraScreen(
     fun capturePhoto() {
         viewModel.beginCapture { reservation ->
             val temp = reservation.tempFile
-            if (liveBackendActive) {
-                liveController.capture(
-                    taskId = reservation.id,
-                    file = temp,
-                    onSaved = { _, warning ->
-                        viewModel.saveCapturedPhoto(reservation.id, isMotionPhoto = true)
-                        warning?.let(viewModel::reportMessage)
-                    },
-                    onPhotoOnly = { _, warning ->
-                        viewModel.saveCapturedPhoto(reservation.id)
-                        viewModel.reportMessage(warning)
-                    },
-                    onError = { viewModel.onCaptureFailed(reservation.id, temp, it) },
-                )
-            } else {
-                controller.takePhoto(reservation.id, temp,
+            controller.takePhoto(reservation.id, temp,
                     onSaved = { viewModel.saveCapturedPhoto(reservation.id) },
                     onError = { viewModel.onCaptureFailed(reservation.id, temp, it) })
-            }
         }
     }
 
@@ -415,7 +300,6 @@ internal fun CameraScreen(
 
     fun startVideoFromLongPress() {
         if (!audioPermissionGranted) {
-            requestingLiveAudio = false
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
@@ -439,11 +323,7 @@ internal fun CameraScreen(
                     ),
                 )
             }
-            if (liveBackendActive) {
-                liveController.stop { controller.resumeCamera(beginRecording) }
-            } else {
-                controller.resumeCamera(beginRecording)
-            }
+            beginRecording()
         }
     }
 
@@ -513,18 +393,6 @@ internal fun CameraScreen(
                         }
                     }
                 }
-                LiveModeToggle(
-                    checked = livePhotoEnabled,
-                    enabled = !state.controlsLocked && !state.video.isActive,
-                    onCheckedChange = {
-                        if (livePlatformSupported) {
-                            livePhotoEnabled = it
-                            onMotionPhotoEnabledChanged(it)
-                        } else {
-                            viewModel.reportMessage("当前 Android ${Build.VERSION.RELEASE} 支持普通拍照和录像；Live需要Android 13及以上的时间同步接口")
-                        }
-                    },
-                )
                 Box {
                     IconButton(onClick = { settingsMenu = true }, enabled = !state.controlsLocked, modifier = Modifier.size(42.dp)) {
                         Icon(Icons.Default.Settings, "相机设置", tint = Color.White)
@@ -548,8 +416,7 @@ internal fun CameraScreen(
                                     ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
                                     else -> ImageCapture.FLASH_MODE_OFF
                                 }
-                                if (liveBackendActive) liveController.setFlashMode(flashMode)
-                                else flashMode = controller.cycleFlash()
+                                flashMode = controller.cycleFlash()
                             },
                         )
                         DropdownMenuItem(
@@ -603,16 +470,6 @@ internal fun CameraScreen(
                     .clipToBounds()
                     .zIndex(0f),
             ) {
-                if (liveBackendActive) {
-                    key(liveController) {
-                        AndroidView(
-                            factory = { previewContext ->
-                                TextureView(previewContext).also(liveController::attach)
-                            },
-                            modifier = Modifier.fillMaxSize().onSizeChanged { previewSize = it },
-                        )
-                    }
-                } else {
                     AndroidView(
                         factory = { previewContext ->
                             PreviewView(previewContext).also { view ->
@@ -642,14 +499,13 @@ internal fun CameraScreen(
                         },
                         modifier = Modifier.fillMaxSize().onSizeChanged { previewSize = it },
                     )
-                }
 
                 SnackbarHost(
                     hostState = snackbar,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(
-                            top = if (liveBackendActive && (!liveState.ready || liveState.warming)) 52.dp else 12.dp,
+                            top = 12.dp,
                             start = 28.dp,
                             end = 28.dp,
                         ),
@@ -678,32 +534,6 @@ internal fun CameraScreen(
                         }
                     },
                 )
-
-                if (liveBackendActive && (!liveState.ready || liveState.warming)) {
-                    Surface(
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color.Black.copy(alpha = 0.48f),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Icon(
-                                Icons.Default.CameraAlt,
-                                contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.72f),
-                                modifier = Modifier.size(13.dp),
-                            )
-                            Text(
-                                if (liveState.ready) "Live预录中，可立即拍摄" else "正在启动Live…",
-                                color = Color.White.copy(alpha = 0.86f),
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
-                    }
-                }
 
                 if (gridEnabled) {
                     Canvas(Modifier.fillMaxSize()) {
@@ -790,8 +620,7 @@ internal fun CameraScreen(
                                 vertical = true,
                                 dragDistanceMultiplier = 3.75f,
                                 onValueChange = { value ->
-                                    exposure = if (liveBackendActive) liveController.setExposureCompensation(value)
-                                    else controller.setExposureCompensation(value)
+                                    exposure = controller.setExposureCompensation(value)
                                     focusSequence++
                                 },
                                 modifier = Modifier.fillMaxSize().padding(vertical = 8.dp),
@@ -834,8 +663,7 @@ internal fun CameraScreen(
                                 modifier = Modifier
                                     .graphicsLayer { scaleX = itemScale; scaleY = itemScale }
                                     .clickable {
-                                        if (liveBackendActive) liveController.animateZoomRatio(preset)
-                                        else controller.animateZoomRatio(preset)
+                                        controller.animateZoomRatio(preset)
                                     },
                                 shape = CircleShape,
                                 color = itemColor,
@@ -926,10 +754,7 @@ internal fun CameraScreen(
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         IconButton(
                             onClick = {
-                                val switched = if (liveBackendActive) {
-                                    liveController.switchLens()
-                                    true
-                                } else if (
+                                val switched = if (
                                     state.video.phase == VideoRecordingPhase.RECORDING ||
                                     state.video.phase == VideoRecordingPhase.PAUSED
                                 ) {
@@ -969,8 +794,7 @@ internal fun CameraScreen(
                             maxValue = maxExposure,
                             vertical = false,
                             onValueChange = { value ->
-                                exposure = if (liveBackendActive) liveController.setExposureCompensation(value)
-                                else controller.setExposureCompensation(value)
+                                exposure = controller.setExposureCompensation(value)
                             },
                             onInteractionChange = { bottomExposureActive = it },
                             modifier = Modifier.weight(1f).height(24.dp),

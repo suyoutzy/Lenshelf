@@ -246,8 +246,8 @@ class CameraViewModel(
         mutableState.value = mutableState.value.copy(message = error)
     }
 
-    fun saveCapturedPhoto(taskId: String, isMotionPhoto: Boolean = false) {
-        container.captureTasks.markReady(taskId, if (isMotionPhoto) MediaKind.MOTION_PHOTO else MediaKind.PHOTO)
+    fun saveCapturedPhoto(taskId: String) {
+        container.captureTasks.markReady(taskId, MediaKind.PHOTO)
         mutableState.value = mutableState.value.copy(message = "已拍摄，正在后台保存")
     }
 

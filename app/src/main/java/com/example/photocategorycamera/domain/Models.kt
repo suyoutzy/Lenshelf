@@ -27,7 +27,6 @@ enum class CaptureStatus {
 
 enum class MediaKind {
     PHOTO,
-    MOTION_PHOTO,
     VIDEO,
 }
 
@@ -44,8 +43,6 @@ data class PendingMedia(
     val categoryId: String,
     val categoryName: String,
     val mediaKind: MediaKind = MediaKind.PHOTO,
-) {
-    val isMotionPhoto: Boolean get() = mediaKind == MediaKind.MOTION_PHOTO
-}
+)
 
 typealias PendingCapture = PendingMedia

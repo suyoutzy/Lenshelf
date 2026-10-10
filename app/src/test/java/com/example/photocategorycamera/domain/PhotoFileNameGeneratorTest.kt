@@ -17,12 +17,6 @@ class PhotoFileNameGeneratorTest {
     }
 
     @Test
-    fun motionPhotoNameEndsWithMpMarker() {
-        val name = PhotoFileNameGenerator.baseName(0L, motionPhoto = true)
-        assertTrue(name.matches(Regex("IMG_\\d{8}_\\d{6}_000_MP\\.jpg")))
-    }
-
-    @Test
     fun videoNameUsesVidPrefixAndMp4Extension() {
         val name = PhotoFileNameGenerator.baseName(MediaKind.VIDEO, 0L)
         assertTrue(name.matches(Regex("VID_\\d{8}_\\d{6}_000\\.mp4")))

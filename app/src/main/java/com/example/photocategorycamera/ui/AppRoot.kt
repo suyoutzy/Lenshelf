@@ -148,8 +148,6 @@ fun AppRoot(
                             },
                             gridEnabled = state.cameraGridEnabled,
                             onGridEnabledChanged = appViewModel::setCameraGridEnabled,
-                            motionPhotoEnabled = state.motionPhotoEnabled,
-                            onMotionPhotoEnabledChanged = appViewModel::setMotionPhotoEnabled,
                             videoStabilizationEnabled = state.videoStabilizationEnabled,
                             onVideoStabilizationEnabledChanged = appViewModel::setVideoStabilizationEnabled,
                         )

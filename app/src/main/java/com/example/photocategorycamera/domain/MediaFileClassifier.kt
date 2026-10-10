@@ -1,6 +1,5 @@
 package com.example.photocategorycamera.domain
 
-/** Count Motion Photo JPEGs once, and ignore sidecars, hidden files and folders. */
 object MediaFileClassifier {
     private val extensions = setOf(
         "jpg", "jpeg", "png", "webp", "heic", "heif", "avif", "gif", "bmp", "dng",

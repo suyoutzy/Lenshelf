@@ -4,8 +4,6 @@ import android.graphics.Bitmap
 import android.os.Build
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertCountEquals
-import androidx.compose.ui.test.assertIsOff
-import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -66,85 +64,51 @@ class HomeCameraUiDeviceTest {
         }
     }
 
-    @Test fun homeShowsCountsAndCameraTogglePersistsBothStates() {
+    @Test fun ordinaryPhotoAndAudioVideoStillSave() {
         val app = ApplicationProvider.getApplicationContext<PhotoCategoryCameraApplication>()
         val container = app.container
-        val original = runBlocking { container.settings.settings.first().motionPhotoEnabled }
         val category = runBlocking { container.categories.getAll().first { it.isActive } }
-        // Shell launch avoids the target Xiaomi device's blocked ActivityScenario startup.
         ParcelFileDescriptor.AutoCloseInputStream(
             InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
                 "am start -n ${app.packageName}/.MainActivity",
             ),
         ).bufferedReader().use { it.readText() }
-        fun screenshot(name: String) {
-            val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
-            File(app.filesDir, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        compose.waitUntil(15_000) {
+            compose.onAllNodesWithText("个文件", substring = true).fetchSemanticsNodes().isNotEmpty()
         }
-        try {
-            compose.waitUntil(15_000) {
-                compose.onAllNodesWithText("个文件", substring = true).fetchSemanticsNodes().isNotEmpty()
-            }
-            compose.onAllNodesWithText("进入相机").assertCountEquals(0)
-            compose.onAllNodesWithText("分类拍摄 · 自动归档").assertCountEquals(0)
-            compose.onAllNodesWithText("文件").assertCountEquals(0)
-            screenshot("ui063-home.png")
-            compose.onNodeWithText(category.name).performClick()
-            compose.waitUntil(15_000) {
-                compose.onNodeWithContentDescription("Live 图").fetchSemanticsNode().config
-                    .contains(androidx.compose.ui.semantics.SemanticsProperties.ToggleableState)
-            }
-            if (Build.VERSION.SDK_INT < 33) {
-                compose.onNodeWithContentDescription("Live 图").assertIsOff()
-                compose.onNodeWithContentDescription("Live 图").performClick()
-                compose.onNodeWithContentDescription("Live 图").assertIsOff()
-                org.junit.Assert.assertEquals(original, runBlocking { container.settings.settings.first().motionPhotoEnabled })
-                screenshot("ui-legacy-camera.png")
-                val root = runBlocking { container.settings.settings.first().storageRoot!! }
-                val directory = DocumentFile.fromTreeUri(app, Uri.parse(root.treeUri))!!.findFile(category.name)!!
-                val before = directory.listFiles().map { it.uri }.toSet()
-                // Camera hardware warm-up runs on wall time, independent of the Compose clock.
-                android.os.SystemClock.sleep(2_500)
-                compose.onNodeWithContentDescription("拍照，长按录像").performClick()
-                compose.waitUntil(30_000) {
-                    directory.listFiles().any { it.uri !in before && it.type == "image/jpeg" } &&
-                        runBlocking { container.captureTasks.outstanding.first().isEmpty() }
-                }
-                val photo = directory.listFiles().first { it.uri !in before && it.type == "image/jpeg" }
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                app.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it, null, options) }
-                org.junit.Assert.assertTrue(options.outWidth > 0 && options.outHeight > 0)
-                compose.onNodeWithContentDescription("拍照，长按录像").performSemanticsAction(SemanticsActions.OnLongClick) { it() }
-                compose.waitUntil(20_000) {
-                    compose.onAllNodesWithContentDescription("停止录像").fetchSemanticsNodes().isNotEmpty()
-                }
-                android.os.SystemClock.sleep(3_000)
-                compose.onNodeWithContentDescription("停止录像").performClick()
-                compose.waitUntil(30_000) {
-                    directory.listFiles().any { it.uri !in before && it.type == "video/mp4" } &&
-                        runBlocking { container.captureTasks.outstanding.first().isEmpty() }
-                }
-                val video = directory.listFiles().first { it.uri !in before && it.type == "video/mp4" }
-                MediaMetadataRetriever().use { retriever ->
-                    retriever.setDataSource(app, video.uri)
-                    org.junit.Assert.assertEquals("yes", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO))
-                    org.junit.Assert.assertEquals("yes", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO))
-                    org.junit.Assert.assertTrue(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() > 0)
-                }
-                return
-            }
-            if (original) compose.onNodeWithContentDescription("Live 图").performClick()
-            compose.onNodeWithContentDescription("Live 图").assertIsOff()
-            compose.waitUntil(10_000) { runBlocking { !container.settings.settings.first().motionPhotoEnabled } }
-            screenshot("ui063-live-off.png")
-            compose.onNodeWithContentDescription("Live 图").performClick()
-            compose.onNodeWithContentDescription("Live 图").assertIsOn()
-            compose.waitUntil(10_000) { runBlocking { container.settings.settings.first().motionPhotoEnabled } }
-            screenshot("ui063-live-on.png")
-            compose.onNodeWithContentDescription("相机设置").performClick()
-            compose.onAllNodesWithText("Live 图").assertCountEquals(0)
-        } finally {
-            runBlocking { container.settings.setMotionPhotoEnabled(original) }
+        compose.onNodeWithText(category.name).performClick()
+        compose.waitUntil(15_000) {
+            compose.onAllNodesWithContentDescription("拍照，长按录像").fetchSemanticsNodes().isNotEmpty()
+        }
+        val root = runBlocking { container.settings.settings.first().storageRoot!! }
+        val directory = DocumentFile.fromTreeUri(app, Uri.parse(root.treeUri))!!.findFile(category.name)!!
+        val before = directory.listFiles().map { it.uri }.toSet()
+        android.os.SystemClock.sleep(2_500)
+        compose.onNodeWithContentDescription("拍照，长按录像").performClick()
+        compose.waitUntil(30_000) {
+            directory.listFiles().any { it.uri !in before && it.type == "image/jpeg" } &&
+                runBlocking { container.captureTasks.outstanding.first().isEmpty() }
+        }
+        val photo = directory.listFiles().first { it.uri !in before && it.type == "image/jpeg" }
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        app.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it, null, options) }
+        org.junit.Assert.assertTrue(options.outWidth > 0 && options.outHeight > 0)
+        compose.onNodeWithContentDescription("拍照，长按录像").performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        compose.waitUntil(20_000) {
+            compose.onAllNodesWithContentDescription("停止录像").fetchSemanticsNodes().isNotEmpty()
+        }
+        android.os.SystemClock.sleep(3_000)
+        compose.onNodeWithContentDescription("停止录像").performClick()
+        compose.waitUntil(30_000) {
+            directory.listFiles().any { it.uri !in before && it.type == "video/mp4" } &&
+                runBlocking { container.captureTasks.outstanding.first().isEmpty() }
+        }
+        val video = directory.listFiles().first { it.uri !in before && it.type == "video/mp4" }
+        MediaMetadataRetriever().use { retriever ->
+            retriever.setDataSource(app, video.uri)
+            org.junit.Assert.assertEquals("yes", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO))
+            org.junit.Assert.assertEquals("yes", retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO))
+            org.junit.Assert.assertTrue(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() > 0)
         }
     }
 }
