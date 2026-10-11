@@ -44,6 +44,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -135,7 +137,7 @@ private fun DocumentCornerEditor(bitmap: Bitmap, quad: DocumentQuad, enabled: Bo
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val touchRadius = with(LocalDensity.current) { 48.dp.toPx() }
     val image = remember(bitmap) { bitmap.asImageBitmap() }
-    Canvas(Modifier.fillMaxSize().onSizeChanged { canvasSize = it }
+    Canvas(Modifier.fillMaxSize().semantics { contentDescription = "文档四角调整区域" }.onSizeChanged { canvasSize = it }
         .pointerInput(bitmap, canvasSize, enabled, quad) {
             if (!enabled || canvasSize.width == 0 || canvasSize.height == 0) return@pointerInput
             val scale = minOf(canvasSize.width.toFloat() / bitmap.width, canvasSize.height.toFloat() / bitmap.height)
