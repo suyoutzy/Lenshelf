@@ -60,11 +60,13 @@ class DocumentModelsTest {
         assertEquals(96f, smaller.cropCoordinates(640, 480)[1], 0.001f)
     }
 
-    @Test fun outlineNeedsConsecutiveFramesAndClearsWhenMissing() {
+    @Test fun oneMissDoesNotRefreshTheOutlineAndRepeatedMissesClearIt() {
         val stabilizer = DocumentOutlineStabilizer()
-        assertNull(stabilizer.update(DocumentQuad.FULL_IMAGE))
-        assertNotNull(stabilizer.update(DocumentQuad.FULL_IMAGE))
-        assertNull(stabilizer.update(null))
+        assertNull(stabilizer.update(DocumentQuad.FULL_IMAGE, 1000))
+        assertNotNull(stabilizer.update(DocumentQuad.FULL_IMAGE, 1200))
+        assertNotNull(stabilizer.update(null, 1400))
+        assertEquals(1200L, stabilizer.observedAtMs)
+        assertNull(stabilizer.update(null, 1600))
         assertNull(stabilizer.update(DocumentQuad.FULL_IMAGE))
     }
 
@@ -75,9 +77,21 @@ class DocumentModelsTest {
         val smaller = DocumentQuad(listOf(DocumentPoint(0.2f, 0.2f), DocumentPoint(0.8f, 0.2f),
             DocumentPoint(0.8f, 0.8f), DocumentPoint(0.2f, 0.8f)))
         assertNull(stabilizer.update(smaller))
+        assertNull(stabilizer.update(smaller))
         val stable = stabilizer.update(smaller)!!
         smaller.points.zip(stable.points).forEach { (a, b) ->
             assertEquals(a.x, b.x, 0.0001f); assertEquals(a.y, b.y, 0.0001f)
         }
+    }
+
+    @Test fun oneNeighbouringPageCannotStealTheStableTarget() {
+        val stabilizer = DocumentOutlineStabilizer()
+        val page = DocumentQuad.FULL_IMAGE
+        val neighbour = page.move(0, DocumentPoint(0.2f, 0.2f))
+        stabilizer.update(page, 1000)
+        stabilizer.update(page, 1200)
+        assertNull(stabilizer.update(neighbour, 1400))
+        assertEquals(page, stabilizer.trackingHint)
+        assertEquals(page, stabilizer.update(page, 1600))
     }
 }

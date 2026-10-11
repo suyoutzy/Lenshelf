@@ -6,7 +6,11 @@ import androidx.room.PrimaryKey
 import com.example.photocategorycamera.domain.Category
 import com.example.photocategorycamera.domain.MediaKind
 
-enum class CaptureTaskStage { CAPTURING, READY, SAVING, RETRY, FAILED }
+enum class CaptureTaskStage {
+    CAPTURING, DOCUMENT_PROCESSING, DOCUMENT_RETRY, READY, SAVING, RETRY, FAILED;
+
+    val isRetryable: Boolean get() = this == RETRY || this == DOCUMENT_RETRY
+}
 
 @Entity(
     tableName = "capture_tasks",

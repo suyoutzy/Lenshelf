@@ -41,8 +41,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import androidx.navigation.NavType
 import com.example.photocategorycamera.AppContainer
 import com.example.photocategorycamera.domain.FolderOpenMode
 import kotlinx.coroutines.delay
@@ -107,7 +105,7 @@ fun AppRoot(
                             onSettings = { navController.navigate(SETTINGS) },
                             onRetry = appViewModel::retryPending,
                             onDiscardFailed = appViewModel::discardFailedCaptures,
-                            onResumeDocument = { navController.navigate("document/" + it) },
+                            onSaveLegacyDocument = appViewModel::saveLegacyDocument,
                             onDiscardDocument = appViewModel::discardDocument,
                         )
                     }
@@ -132,14 +130,11 @@ fun AppRoot(
                             onFolderOpenModeChanged = appViewModel::setFolderOpenMode,
                         )
                     }
-                    composable("$CAMERA/{categoryId}?retake={retakeId}",
-                        arguments = listOf(navArgument("retakeId") { type = NavType.StringType; defaultValue = "" }),
-                    ) { entry ->
+                    composable("$CAMERA/{categoryId}") { entry ->
                         val categoryId = entry.arguments?.getString("categoryId") ?: return@composable
-                        val retakeId = entry.arguments?.getString("retakeId")?.takeIf { it.isNotEmpty() }
                         val cameraViewModel: CameraViewModel = viewModel(
-                            key = "camera-$categoryId-$retakeId",
-                            factory = CameraViewModel.factory(LocalContext.current, categoryId, container, retakeId),
+                            key = "camera-$categoryId",
+                            factory = CameraViewModel.factory(LocalContext.current, categoryId, container),
                         )
                         CameraScreen(
                             viewModel = cameraViewModel,
@@ -157,34 +152,6 @@ fun AppRoot(
                             onGridEnabledChanged = appViewModel::setCameraGridEnabled,
                             videoStabilizationEnabled = state.videoStabilizationEnabled,
                             onVideoStabilizationEnabledChanged = appViewModel::setVideoStabilizationEnabled,
-                            onReviewDocument = { id ->
-                                if (navController.currentBackStackEntry == entry) navController.navigate("document/" + id)
-                            },
-                        )
-                    }
-                    composable("document/{draftId}") { entry ->
-                        val id = entry.arguments?.getString("draftId") ?: return@composable
-                        val documentViewModel: DocumentViewModel = viewModel(
-                            key = "document-" + id,
-                            factory = DocumentViewModel.factory(container, id),
-                        )
-                        val goHome = {
-                            navController.popBackStack(HOME, inclusive = false)
-                            Unit
-                        }
-                        DocumentReviewScreen(
-                            viewModel = documentViewModel,
-                            onBack = goHome,
-                            onRetake = { draft ->
-                                navController.navigate("$CAMERA/" + draft.categoryId + "?retake=" + draft.id) {
-                                    popUpTo(HOME)
-                                    launchSingleTop = true
-                                }
-                            },
-                            onQueued = {
-                                appViewModel.reportMessage("文档已确认，正在后台保存到分类文件夹")
-                                goHome()
-                            },
                         )
                     }
             }

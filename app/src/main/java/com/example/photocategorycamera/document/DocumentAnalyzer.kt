@@ -10,9 +10,9 @@ import com.example.photocategorycamera.domain.DocumentOutlineStabilizer
 import com.example.photocategorycamera.domain.DocumentQuad
 
 @androidx.annotation.OptIn(markerClass = [androidx.camera.view.TransformExperimental::class])
-data class DocumentAnalysisResult(val quad: DocumentQuad?, val crop: Rect, val transform: OutputTransform)
+data class DocumentAnalysisResult(val quad: DocumentQuad?, val crop: Rect, val transform: OutputTransform, val analyzedAtMs: Long)
 
-/** Reads only luminance, caps analysis at 5 Hz and always returns the image to CameraX. */
+/** Local colour/edge detection, capped at 5 Hz; always returns the image to CameraX. */
 @androidx.annotation.OptIn(markerClass = [androidx.camera.view.TransformExperimental::class])
 class DocumentAnalyzer(
     private val processor: DocumentProcessor,
@@ -37,16 +37,12 @@ class DocumentAnalyzer(
             val width = crop.width() / step
             val height = crop.height() / step
             if (width < 2 || height < 2) return
-            val plane = image.planes[0]
-            val buffer = plane.buffer.duplicate()
-            val base = buffer.position()
-            val pixels = ByteArray(width * height)
-            for (row in 0 until height) {
-                val offset = base + (crop.top + row * step) * plane.rowStride + crop.left * plane.pixelStride
-                for (column in 0 until width) pixels[row * width + column] = buffer.get(offset + column * step * plane.pixelStride)
-            }
-            val quad = stabilizer.update(processor.detectLuminance(pixels, width, height))
-            onResult(DocumentAnalysisResult(quad, Rect(crop), transformFactory.getOutputTransform(image)))
+            val pixels = DocumentFramePixels.rgb(image.planes.map {
+                DocumentFramePixels.Plane(it.buffer.duplicate(), it.rowStride, it.pixelStride)
+            }, crop.left, crop.top, crop.width(), crop.height(), width, height)
+            val candidate = processor.detectRgb(pixels, width, height, stabilizer.trackingHint)
+            val quad = stabilizer.update(candidate, now)
+            onResult(DocumentAnalysisResult(quad, Rect(crop), transformFactory.getOutputTransform(image), stabilizer.observedAtMs))
         } catch (error: Exception) {
             reportError(error)
         } catch (error: LinkageError) {
@@ -57,7 +53,7 @@ class DocumentAnalyzer(
     private fun reportError(error: Throwable) {
         if (!errorReported) {
             errorReported = true
-            onError(error.message ?: "实时识别暂不可用，仍可拍摄并手动调整")
+            onError(error.message ?: "实时识别暂不可用，拍后仍会识别；无边界时保留全图")
         }
     }
 }

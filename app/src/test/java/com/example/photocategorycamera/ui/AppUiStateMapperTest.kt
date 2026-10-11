@@ -17,6 +17,17 @@ class AppUiStateMapperTest {
     private val root = StorageRoot("content://root", "Lenshelf", 1L)
     private val category = Category("category-1", "学习", 0, true, 1L)
 
+    @Test fun `document processing reserves a slot and processing errors expose retry`() {
+        val state = AppUiStateMapper.create(listOf(category), AppSettings(storageRoot = root),
+            listOf(task("processing", "学习", CaptureTaskStage.DOCUMENT_PROCESSING),
+                task("retry", "课件", CaptureTaskStage.DOCUMENT_RETRY, "处理失败")), false, null)
+        assertEquals(2, state.pendingCaptureCount)
+        assertEquals("课件", state.pendingCategoryName)
+        assertTrue(state.hasPendingCapture)
+        assertTrue(state.canRetryCapture)
+        assertEquals(0, state.failedCaptureCount)
+    }
+
     @Test
     fun `summarizes legacy pending retry and failed tasks without counting failures as pending`() {
         val settings = AppSettings(

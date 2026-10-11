@@ -47,21 +47,43 @@ class CaptureTaskRepository(
 
     init { scope.launch { initialization.await(); processReady() } }
 
-    /** The draft-to-queue transition is atomic and uses its stable ID exactly once. */
+    /** Reserve the source and its queue slot together, before CameraX writes anything. */
+    suspend fun reserveDocument(draft: DocumentDraftEntity): Result<Unit> = runCatching {
+        initialization.await()
+        reservationMutex.withLock {
+            database.withTransaction {
+                check(dao.countOutstanding() < MAX_OUTSTANDING) { "保存队列已满，请稍后拍摄" }
+                val now = System.currentTimeMillis()
+                check(dao.insert(CaptureTaskEntity(
+                    draft.id, draft.sourcePath, draft.categoryId, draft.categoryName, draft.rootTreeUri,
+                    MediaKind.PHOTO.name, CaptureTaskStage.DOCUMENT_PROCESSING.name,
+                    createdAt = now, updatedAt = now,
+                )) != -1L) { "文档任务已存在" }
+                documentDao.insert(draft)
+            }
+        }
+    }
+
+    /** Processing-to-saving is atomic; retries reuse the reserved ID and target. */
     suspend fun enqueueDocument(id: String, processed: File): Result<Unit> = runCatching {
         initialization.await()
         reservationMutex.withLock {
             database.withTransaction {
                 val draft = checkNotNull(documentDao.find(id)) { "文档草稿已不存在" }
                 if (draft.stage == "QUEUED") return@withTransaction
-                check(draft.stage == "EDITING" && draft.replacementPath == null) { "文档仍在拍摄中" }
-                check(dao.countOutstanding() < MAX_OUTSTANDING) { "保存队列已满，请稍后确认保存" }
+                check(draft.stage in listOf("EDITING", "AUTO_PROCESSING") && draft.replacementPath == null) { "文档仍在拍摄中" }
                 check(isRecoverableJpeg(processed)) { "处理后的文档图片无效" }
                 val now = System.currentTimeMillis()
-                check(dao.insert(CaptureTaskEntity(
-                    id, processed.absolutePath, draft.categoryId, draft.categoryName, draft.rootTreeUri,
-                    MediaKind.PHOTO.name, CaptureTaskStage.READY.name, createdAt = now, updatedAt = now,
-                )) != -1L) { "文档保存任务已存在" }
+                if (draft.stage == "AUTO_PROCESSING") {
+                    check(dao.find(id)?.taskStage == CaptureTaskStage.DOCUMENT_PROCESSING) { "文档任务状态不一致" }
+                    dao.markDocumentReady(id, processed.absolutePath, now)
+                } else {
+                    check(dao.countOutstanding() < MAX_OUTSTANDING) { "保存队列已满，请稍后保存旧草稿" }
+                    check(dao.insert(CaptureTaskEntity(
+                        id, processed.absolutePath, draft.categoryId, draft.categoryName, draft.rootTreeUri,
+                        MediaKind.PHOTO.name, CaptureTaskStage.READY.name, createdAt = now, updatedAt = now,
+                    )) != -1L) { "文档保存任务已存在" }
+                }
                 documentDao.update(draft.copy(stage = "QUEUED", editingSlot = null))
             }
             scope.launch { processReady() }
@@ -148,6 +170,9 @@ class CaptureTaskRepository(
         documentDao.find(id)?.let { draft ->
             File(draft.sourcePath).delete()
             draft.replacementPath?.let { File(it).delete() }
+            val directory = File(context.filesDir, "document-drafts")
+            File(directory, id + "_processed.jpg").delete()
+            File(directory, id + "_processed.jpg.part").delete()
             documentDao.delete(id)
         }
     }

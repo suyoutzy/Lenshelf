@@ -114,6 +114,7 @@ import com.example.photocategorycamera.camera.CameraController
 import com.example.photocategorycamera.camera.VideoRecordingCallbacks
 import com.example.photocategorycamera.domain.Category
 import com.example.photocategorycamera.domain.CaptureMode
+import com.example.photocategorycamera.domain.DocumentEffect
 import com.example.photocategorycamera.domain.CameraOrientation
 import com.example.photocategorycamera.domain.CameraOrientationFilter
 import com.example.photocategorycamera.domain.ExposureDragMapper
@@ -136,7 +137,6 @@ internal fun CameraScreen(
     onGridEnabledChanged: (Boolean) -> Unit,
     videoStabilizationEnabled: Boolean,
     onVideoStabilizationEnabledChanged: (Boolean) -> Unit,
-    onReviewDocument: (String) -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -254,11 +254,12 @@ internal fun CameraScreen(
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
         onDispose { orientationListener.disable() }
     }
-    DisposableEffect(controller) { onDispose { controller.release() } }
+    DisposableEffect(controller) { onDispose { viewModel.dismissDocumentPreview(); controller.release() } }
     DisposableEffect(lifecycleOwner, controller, state.captureMode) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    viewModel.dismissDocumentPreview()
                     if (controller.isVideoRunning()) {
                         viewModel.markVideoFinalizing()
                         controller.stopVideo()
@@ -283,8 +284,10 @@ internal fun CameraScreen(
     fun capturePhoto() {
         if (state.captureMode == CaptureMode.DOCUMENT) {
             viewModel.beginDocumentCapture { reservation ->
+                val boundary = controller.freezeDocumentBoundary()
+                val projection = controller.freezeDocumentProjection()
                 controller.takePhoto(reservation.id, reservation.file,
-                    onSaved = { viewModel.onDocumentCaptured(reservation.id, onReviewDocument) },
+                    onSaved = { file -> viewModel.onDocumentCaptured(reservation.id, projection?.project(file), boundary?.mapToUpright(file)) },
                     onError = { viewModel.onDocumentFailed(reservation.id, it) })
             }
             return
@@ -442,6 +445,14 @@ internal fun CameraScreen(
                                 settingsMenu = false
                             },
                         )
+                        if (state.captureMode == CaptureMode.DOCUMENT) {
+                            DocumentEffect.entries.forEach { effect ->
+                                DropdownMenuItem(
+                                    text = { Text("文档：" + effect.label + if (state.documentEffect == effect) " ✓" else "") },
+                                    onClick = { viewModel.setDocumentEffect(effect); settingsMenu = false },
+                                )
+                            }
+                        }
                         DropdownMenuItem(
                             text = {
                                 Column {
@@ -516,9 +527,14 @@ internal fun CameraScreen(
                         modifier = Modifier.fillMaxSize().onSizeChanged { previewSize = it },
                     )
 
+                state.documentDisplay?.let { display ->
+                    DocumentCaptureOverlay(display) { viewModel.dismissDocumentPreview(display.preview.id) }
+                }
+
                 SnackbarHost(
                     hostState = snackbar,
                     modifier = Modifier
+                        .zIndex(2f)
                         .align(Alignment.TopCenter)
                         .padding(
                             top = 12.dp,
@@ -860,11 +876,6 @@ internal fun CameraScreen(
                     )
                 }
                 if (state.canRetry) TextButton(onClick = viewModel::retry) { Text("重试保存", color = Color.White) }
-                state.documentDraft?.let { draft ->
-                    if (state.captureMode == CaptureMode.DOCUMENT && !state.controlsLocked) {
-                        TextButton(onClick = { onReviewDocument(draft.id) }) { Text("继续编辑待确认文档", color = Color(0xFFFFD34E)) }
-                    }
-                }
             }
         }
     }

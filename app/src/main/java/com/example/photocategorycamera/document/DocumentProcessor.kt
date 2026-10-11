@@ -6,26 +6,26 @@ import android.graphics.Matrix
 import androidx.exifinterface.media.ExifInterface
 import com.example.photocategorycamera.domain.DocumentEffect
 import com.example.photocategorycamera.domain.DocumentCoordinates
-import com.example.photocategorycamera.domain.DocumentPoint
 import com.example.photocategorycamera.domain.DocumentQuad
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
-import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.atan2
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /** Owns local image processing; callers run this synchronous work on a background dispatcher. */
 class DocumentProcessor {
     private val initialized by lazy { OpenCVLoader.initLocal() }
+    private val detector = DocumentBoundaryDetector()
+    private val lineDetector = DocumentLineDetector()
     private fun requireOpenCv() { check(initialized) { "文档处理组件无法加载，请使用普通拍照" } }
 
     fun loadUpright(source: File, maxEdge: Int): Bitmap {
@@ -68,55 +68,72 @@ class DocumentProcessor {
         try {
             Utils.bitmapToMat(bitmap, rgba)
             Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
-            return detectGray(gray)
+            return detectFrame(gray, rgba, null)
         } finally { bitmap.recycle(); rgba.release(); gray.release() }
     }
 
     fun detectLuminance(pixels: ByteArray, width: Int, height: Int): DocumentQuad? {
         requireOpenCv()
         val gray = Mat(height, width, CvType.CV_8UC1)
-        try { gray.put(0, 0, pixels); return detectGray(gray) }
+        try { gray.put(0, 0, pixels); return detectFrame(gray, null, null) }
         finally { gray.release() }
     }
 
-    private fun detectGray(gray: Mat): DocumentQuad? {
-        val blurred = Mat()
-        val edges = Mat()
-        val hierarchy = Mat()
-        val contours = mutableListOf<MatOfPoint>()
+    fun detectRgb(pixels: ByteArray, width: Int, height: Int, preferred: DocumentQuad? = null): DocumentQuad? {
+        requireOpenCv()
+        val rgb = Mat(height, width, CvType.CV_8UC3)
+        val gray = Mat()
         try {
-            Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
-            Imgproc.Canny(blurred, edges, 45.0, 130.0)
-            val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
-            try { Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel) }
-            finally { kernel.release() }
-            Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE)
-            var best: DocumentQuad? = null
-            for (contour in contours) {
-                if (Imgproc.contourArea(contour) < gray.total() * 0.15) continue
-                val curve = MatOfPoint2f(*contour.toArray())
-                val polygon = MatOfPoint2f()
-                try {
-                    Imgproc.approxPolyDP(curve, polygon, Imgproc.arcLength(curve, true) * 0.025, true)
-                    val vertices = polygon.toArray()
-                    if (vertices.size != 4) continue
-                    val cx = vertices.sumOf { it.x } / 4
-                    val cy = vertices.sumOf { it.y } / 4
-                    val ordered = vertices.sortedBy { atan2(it.y - cy, it.x - cx) }
-                    val start = ordered.indices.minBy { ordered[it].x + ordered[it].y }
-                    val quad = DocumentQuad((0..3).map {
-                        val p = ordered[(start + it) % 4]
-                        DocumentPoint((p.x / (gray.cols() - 1)).toFloat().coerceIn(0f, 1f),
-                            (p.y / (gray.rows() - 1)).toFloat().coerceIn(0f, 1f))
-                    })
-                    if (quad.isValid && quad.area > (best?.area ?: 0f)) best = quad
-                } finally { curve.release(); polygon.release() }
+            rgb.put(0, 0, pixels)
+            Imgproc.cvtColor(rgb, gray, Imgproc.COLOR_RGB2GRAY)
+            return detectFrame(gray, rgb, preferred)
+        } finally { rgb.release(); gray.release() }
+    }
+
+    private fun reduced(input: Mat, edge: Int, output: Mat) {
+        val scale = minOf(1.0, edge.toDouble() / maxOf(input.cols(), input.rows()))
+        Imgproc.resize(input, output, Size((input.cols() * scale).roundToInt().toDouble(),
+            (input.rows() * scale).roundToInt().toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
+    }
+
+    private fun detectFrame(gray: Mat, colour: Mat?, preferred: DocumentQuad?): DocumentQuad? {
+        val smaller = Mat()
+        val channel = Mat()
+        try {
+            // Preview and JPEG both start at the same scale; smoothing avoids aliases from ruled lines.
+            for (edge in listOf(640, 960, 1280)) {
+                if (edge != 640 && edge > maxOf(gray.cols(), gray.rows())) continue
+                reduced(gray, edge, smaller)
+                detector.detect(smaller, preferred)?.let { return lineDetector.centralPage(smaller, it, preferred) }
             }
-            return best
-        } finally {
-            blurred.release(); edges.release(); hierarchy.release()
-            contours.forEach { it.release() }
-        }
+            // Equal luminance does not imply equal colour: inspect R/G/B before giving up a page.
+            if (colour != null) for (index in 0..2) {
+                Core.extractChannel(colour, channel, index)
+                reduced(channel, 640, smaller)
+                detector.detect(smaller, preferred)?.let { return lineDetector.centralPage(smaller, it, preferred) }
+            }
+            reduced(gray, 640, smaller)
+            return lineDetector.detect(smaller, preferred)
+        } finally { smaller.release(); channel.release() }
+    }
+
+    /** Keep the shutter's page identity; never substitute an unrelated page if that box has moved. */
+    fun resolveCaptureQuad(source: File, frozen: DocumentQuad?): DocumentQuad {
+        if (frozen == null || frozen == DocumentQuad.FULL_IMAGE || !frozen.isValid) return detect(source) ?: DocumentQuad.FULL_IMAGE
+        requireOpenCv()
+        val bitmap = loadUpright(source, 640)
+        val rgba = Mat()
+        val channel = Mat()
+        try {
+            Utils.bitmapToMat(bitmap, rgba)
+            Imgproc.cvtColor(rgba, channel, Imgproc.COLOR_RGBA2GRAY)
+            if (lineDetector.supports(channel, frozen)) return frozen
+            for (index in 0..2) {
+                Core.extractChannel(rgba, channel, index)
+                if (lineDetector.supports(channel, frozen)) return frozen
+            }
+            return DocumentQuad.FULL_IMAGE
+        } finally { bitmap.recycle(); rgba.release(); channel.release() }
     }
 
     fun render(source: File, quad: DocumentQuad, effect: DocumentEffect, quarterTurns: Int, maxEdge: Int = 4096): Bitmap {
@@ -189,5 +206,11 @@ class DocumentProcessor {
             }
             check(part.renameTo(output)) { "无法完成文档图片写入" }
         } finally { bitmap.recycle(); if (part.exists()) part.delete() }
+    }
+
+    fun capturePreview(id: String, source: File, output: File, quad: DocumentQuad): DocumentCapturePreview {
+        val original = loadUpright(source, 1280)
+        try { return DocumentCapturePreview(id, original, loadUpright(output, 1280), quad) }
+        catch (error: Exception) { original.recycle(); throw error }
     }
 }

@@ -81,22 +81,54 @@ object DocumentCoordinates {
     }
 }
 
-/** Suppress transient candidates and smooth only geometrically valid outlines. */
+/** One missed frame may retain a box, but never makes that old observation fresh again. */
 class DocumentOutlineStabilizer {
     private var previous: DocumentQuad? = null
     private var consecutive = 0
-    fun update(candidate: DocumentQuad?): DocumentQuad? {
+    private var missing = 0
+    private var replacement: DocumentQuad? = null
+    private var replacementFrames = 0
+    var observedAtMs: Long = 0
+        private set
+    val trackingHint: DocumentQuad? get() = previous
+
+    fun update(candidate: DocumentQuad?, frameAtMs: Long = 0): DocumentQuad? {
         if (candidate == null || !candidate.isValid) {
-            previous = null
-            consecutive = 0
+            missing++
+            replacement = null
+            replacementFrames = 0
+            if (missing == 1 && consecutive >= 2) return previous
+            reset()
             return null
         }
+        missing = 0
         val old = previous
-        val close = old != null && old.points.zip(candidate.points).all { (a, b) -> hypot(a.x - b.x, a.y - b.y) < 0.08f }
-        consecutive = if (close) consecutive + 1 else 1
+        val close = old != null && DocumentPageSelection.distance(old, candidate) < 0.08f
+        var acceptedReplacement = false
+        if (old != null && consecutive >= 2 && !close) {
+            // A neighbouring page must be observed repeatedly before changing targets.
+            replacementFrames = if (replacement?.let { DocumentPageSelection.distance(it, candidate) < 0.08f } == true)
+                replacementFrames + 1 else 1
+            replacement = candidate
+            if (replacementFrames < 3) return null
+            reset()
+            acceptedReplacement = true
+        }
+        replacement = null
+        replacementFrames = 0
+        consecutive = if (close) consecutive + 1 else if (acceptedReplacement) 2 else 1
         previous = if (close) DocumentQuad(old!!.points.zip(candidate.points).map { (a, b) ->
             DocumentPoint(a.x * 0.6f + b.x * 0.4f, a.y * 0.6f + b.y * 0.4f)
         }).takeIf { it.isValid } ?: candidate else candidate
+        observedAtMs = frameAtMs
         return previous.takeIf { consecutive >= 2 }
+    }
+
+    private fun reset() {
+        previous = null
+        consecutive = 0
+        replacement = null
+        replacementFrames = 0
+        observedAtMs = 0
     }
 }

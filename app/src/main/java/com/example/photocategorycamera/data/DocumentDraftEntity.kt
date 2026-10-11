@@ -54,6 +54,9 @@ interface DocumentDraftDao {
     @Update
     suspend fun update(draft: DocumentDraftEntity)
 
+    @Query("UPDATE document_drafts SET quadValue = :quadValue WHERE id = :id AND stage = 'AUTO_CAPTURING'")
+    suspend fun setCaptureBoundary(id: String, quadValue: String)
+
     @Query("DELETE FROM document_drafts WHERE id = :id")
     suspend fun delete(id: String)
 }

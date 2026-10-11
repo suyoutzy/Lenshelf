@@ -76,7 +76,7 @@ internal fun HomeScreen(
     onSettings: () -> Unit,
     onRetry: () -> Unit,
     onDiscardFailed: () -> Unit,
-    onResumeDocument: (String) -> Unit,
+    onSaveLegacyDocument: (String) -> Unit,
     onDiscardDocument: (String) -> Unit,
 ) {
     var introExpanded by rememberSaveable { mutableStateOf(false) }
@@ -153,10 +153,10 @@ internal fun HomeScreen(
                 item(key = "document-draft") {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("待确认文档", style = MaterialTheme.typography.titleMedium)
+                            Text("旧版待确认文档", style = MaterialTheme.typography.titleMedium)
                             Text("分类：" + draft.categoryName + " · 尚未归档")
                             Row {
-                                TextButton(onClick = { onResumeDocument(draft.id) }) { Text("继续编辑") }
+                                TextButton(onClick = { onSaveLegacyDocument(draft.id) }, enabled = !state.busy) { Text("保存旧草稿") }
                                 TextButton(onClick = { confirmDiscardDocument = true }) { Text("丢弃") }
                             }
                         }

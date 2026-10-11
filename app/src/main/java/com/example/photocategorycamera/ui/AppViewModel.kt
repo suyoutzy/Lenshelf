@@ -70,6 +70,18 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    fun saveLegacyDocument(id: String) {
+        if (busy.value) return
+        busy.value = true
+        viewModelScope.launch {
+            try {
+                container.documents.submit(id)
+                    .onSuccess { message.value = "旧版文档已加入保存队列" }
+                    .onFailure { message.value = it.message ?: "旧版文档保存失败，原图已保留" }
+            } finally { busy.value = false }
+        }
+    }
+
     fun discardDocument(id: String) {
         viewModelScope.launch {
             runCatching { container.documents.discard(id) }
@@ -265,6 +277,7 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
     fun retryPending() {
         viewModelScope.launch {
             val settings = currentSettings() ?: return@launch
+            container.documents.retryProcessing()
             container.captureTasks.retryAll()
             val root = settings.storageRoot ?: run {
                 message.value = "请先重新授权根目录"

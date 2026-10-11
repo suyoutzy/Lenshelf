@@ -35,6 +35,9 @@ interface CaptureTaskDao {
     @Query("UPDATE capture_tasks SET mediaKind = :kind, stage = :stage, error = NULL, updatedAt = :now WHERE id = :id")
     suspend fun markReady(id: String, kind: String, stage: String = "READY", now: Long)
 
+    @Query("UPDATE capture_tasks SET tempPath = :path, stage = 'READY', error = NULL, updatedAt = :now WHERE id = :id")
+    suspend fun markDocumentReady(id: String, path: String, now: Long)
+
     @Query("UPDATE capture_tasks SET stage = :stage, targetUri = :targetUri, error = :error, updatedAt = :now WHERE id = :id")
     suspend fun updateProgress(id: String, stage: String, targetUri: String?, error: String?, now: Long)
 

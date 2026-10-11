@@ -28,6 +28,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.view.transform.CoordinateTransform
 import com.example.photocategorycamera.document.DocumentAnalyzer
 import com.example.photocategorycamera.document.DocumentProcessor
+import com.example.photocategorycamera.domain.DocumentCaptureGeometry
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
@@ -77,7 +78,30 @@ class CameraController(
     private var imageAnalysis: ImageAnalysis? = null
     private var documentMode = false
     private var analysisGeneration = 0
+    private var latestDocumentBoundary: DocumentCaptureBoundary? = null
+    private var latestDocumentFrame: com.example.photocategorycamera.document.DocumentAnalysisResult? = null
+    private val documentBoundaryExpiry = Runnable {
+        latestDocumentBoundary?.let {
+            if (!DocumentCaptureGeometry.isFresh(it.analysis.analyzedAtMs, SystemClock.elapsedRealtime())) {
+                latestDocumentBoundary = null
+                onDocumentOutline(null)
+            }
+        }
+    }
+    private var documentGeometryChangedAtMs = 0L
+    private var observedPhotoZoom = 1f
     private var onDocumentOutline: (FloatArray?) -> Unit = {}
+    private val documentLayoutRebind = Runnable {
+        if (documentMode && cameraEnabled && !released && !standaloneVideoRunning && provider != null)
+            runCatching(::bindPhotoModeIfEnabled).onFailure { onError(it.message ?: "文档取景更新失败") }
+    }
+    private val documentLayoutListener = android.view.View.OnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+        if (documentMode && (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop)) {
+            invalidateDocumentBoundary()
+            mainHandler.removeCallbacks(documentLayoutRebind)
+            mainHandler.postDelayed(documentLayoutRebind, 300L)
+        }
+    }
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private var videoCapture: VideoCapture<Recorder>? = null
     private var camera: Camera? = null
@@ -154,6 +178,7 @@ class CameraController(
         this.onError = onError
         this.onVideoStabilizationCapabilityChanged = onVideoStabilizationCapabilityChanged
         this.onDocumentOutline = onDocumentOutline
+        previewView.addOnLayoutChangeListener(documentLayoutListener)
         previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         installGestures(previewView)
@@ -203,17 +228,28 @@ class CameraController(
                                 if (generation != analysisGeneration || released || !documentMode || !cameraEnabled) return@post
                                 val quad = result.quad
                                 val target = view.outputTransform
-                                if (quad == null || target == null) onDocumentOutline(null)
+                                latestDocumentFrame = result.takeIf { result.analyzedAtMs >= documentGeometryChangedAtMs }
+                                if (quad == null || target == null || result.analyzedAtMs < documentGeometryChangedAtMs ||
+                                    !DocumentCaptureGeometry.isFresh(result.analyzedAtMs, SystemClock.elapsedRealtime())) {
+                                    latestDocumentBoundary = null
+                                    onDocumentOutline(null)
+                                }
                                 else {
                                     val points = quad.cropCoordinates(result.crop.width(), result.crop.height())
                                     runCatching { CoordinateTransform(result.transform, target).mapPoints(points) }
-                                        .onSuccess { onDocumentOutline(points) }
-                                        .onFailure { onDocumentOutline(null) }
+                                        .onSuccess {
+                                            latestDocumentBoundary = DocumentCaptureBoundary(result)
+                                            onDocumentOutline(points)
+                                            mainHandler.removeCallbacks(documentBoundaryExpiry)
+                                            mainHandler.postDelayed(documentBoundaryExpiry,
+                                                (501L - (SystemClock.elapsedRealtime() - result.analyzedAtMs)).coerceAtLeast(1L))
+                                        }
+                                        .onFailure { latestDocumentBoundary = null; onDocumentOutline(null) }
                                 }
                             }
                         },
                         onError = { error -> mainHandler.post {
-                            if (generation == analysisGeneration && !released) { onDocumentOutline(null); onError(error) }
+                            if (generation == analysisGeneration && !released) { latestDocumentBoundary = null; onDocumentOutline(null); onError(error) }
                         } },
                     ))
                 }
@@ -226,7 +262,8 @@ class CameraController(
             .apply { imageAnalysis?.let(::addUseCase) }
             // Photo geometry must not inherit the still-animating 9:16 video view.
             .setViewPort(
-                androidx.camera.core.ViewPort.Builder(android.util.Rational(3, 4), Surface.ROTATION_0)
+                if (documentMode) checkNotNull(view.viewPort) { "请等待文档取景布局完成" }
+                else androidx.camera.core.ViewPort.Builder(android.util.Rational(3, 4), Surface.ROTATION_0)
                     .setScaleType(androidx.camera.core.ViewPort.FILL_CENTER)
                     .build(),
             )
@@ -247,6 +284,8 @@ class CameraController(
         val zoomState = boundCamera.cameraInfo.zoomState
         observedZoomState = zoomState
         zoomState.observe(owner) { zoom ->
+            if (kotlin.math.abs(zoom.zoomRatio - observedPhotoZoom) > 0.001f) invalidateDocumentBoundary()
+            observedPhotoZoom = zoom.zoomRatio
             onZoomChanged(zoom.zoomRatio, zoom.minZoomRatio, zoom.maxZoomRatio)
         }
         zoomState.value?.let { zoom ->
@@ -265,7 +304,7 @@ class CameraController(
         try { bindPhotoMode() } catch (error: Exception) {
             if (!documentMode) throw error
             bindPhotoMode(withAnalysis = false)
-            onError("当前相机组合不支持实时边框，仍可拍摄后手动调整")
+            onError("当前相机组合不支持实时边框，拍后仍会识别；无边界时保留全图")
         }
     }
 
@@ -279,7 +318,20 @@ class CameraController(
         analysisGeneration++
         imageAnalysis?.clearAnalyzer()
         imageAnalysis = null
+        invalidateDocumentBoundary()
+    }
+
+    private fun invalidateDocumentBoundary() {
+        mainHandler.removeCallbacks(documentBoundaryExpiry)
+        latestDocumentBoundary = null
+        latestDocumentFrame = null
+        documentGeometryChangedAtMs = SystemClock.elapsedRealtime()
         onDocumentOutline(null)
+    }
+
+    internal fun freezeDocumentBoundary(): DocumentCaptureBoundary? = latestDocumentBoundary?.takeIf {
+        documentMode && cameraEnabled && !released && zoomAnimator?.isRunning != true &&
+            DocumentCaptureGeometry.isFresh(it.analysis.analyzedAtMs, SystemClock.elapsedRealtime())
     }
 
     fun takePhoto(taskId: String, file: File, onSaved: (File) -> Unit, onError: (String) -> Unit) {
@@ -307,6 +359,13 @@ class CameraController(
             },
         )
     }
+
+    /** Freeze the current view before an asynchronous capture callback can see a different layout. */
+    internal fun freezeDocumentProjection(): DocumentCaptureProjection? = runCatching {
+        val view = checkNotNull(previewView)
+        check(view.width > 0 && view.height > 0)
+        DocumentCaptureProjection(checkNotNull(latestDocumentFrame).transform, checkNotNull(view.outputTransform), view.width, view.height)
+    }.getOrNull()
 
     fun startVideo(
         file: File,
@@ -672,6 +731,7 @@ class CameraController(
     fun setZoomRatio(ratio: Float) {
         val currentCamera = camera ?: return
         val zoom = currentCamera.cameraInfo.zoomState.value ?: return
+        invalidateDocumentBoundary()
         currentCamera.cameraControl.setZoomRatio(ratio.coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio))
     }
 
@@ -684,6 +744,7 @@ class CameraController(
             duration = 260L
             interpolator = DecelerateInterpolator()
             addUpdateListener { animator ->
+                invalidateDocumentBoundary()
                 camera?.cameraControl?.setZoomRatio(animator.animatedValue as Float)
             }
             start()
@@ -699,6 +760,7 @@ class CameraController(
 
     fun release() {
         released = true
+        previewView?.removeOnLayoutChangeListener(documentLayoutListener)
         stopAnalysis()
         analysisExecutor.shutdown()
         zoomAnimator?.cancel()
@@ -727,7 +789,7 @@ class CameraController(
                 val zoomState = currentCamera.cameraInfo.zoomState.value ?: return false
                 val target = (zoomState.zoomRatio * detector.scaleFactor)
                     .coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
-                currentCamera.cameraControl.setZoomRatio(target)
+                setZoomRatio(target)
                 return true
             }
         })

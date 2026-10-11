@@ -38,7 +38,7 @@ internal object AppUiStateMapper {
         busy: Boolean,
         message: String?,
     ): AppUiState {
-        val retryTask = tasks.firstOrNull { it.taskStage == CaptureTaskStage.RETRY }
+        val retryTask = tasks.firstOrNull { it.taskStage.isRetryable }
         val failedTasks = tasks.filter { it.taskStage == CaptureTaskStage.FAILED }
         val activeTaskCount = tasks.size - failedTasks.size
         return AppUiState(
