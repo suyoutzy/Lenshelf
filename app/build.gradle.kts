@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.photocategorycamera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.7.1"
+        versionCode = 38
+        versionName = "0.8.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

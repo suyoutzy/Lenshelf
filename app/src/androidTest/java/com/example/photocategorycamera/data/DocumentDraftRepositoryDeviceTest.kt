@@ -62,7 +62,13 @@ class DocumentDraftRepositoryDeviceTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val db = Room.inMemoryDatabaseBuilder(appContext, AppDatabase::class.java).build()
         val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { File(files, "fixture.preferences_pb") })
-        try { withTimeout(45_000) { block(Fixture(isolatedContext, db, scope, SettingsRepository(isolatedContext, store))) } }
+        try { withTimeout(45_000) {
+            val settings = SettingsRepository(isolatedContext, store)
+            settings.setStorageRoot(StorageRoot("content://fixture/root-a", "原目录", 1))
+            db.categoryGroupDao().ensureHome()
+            db.categoryDao().insert(CategoryEntity("fixture", "课件", 0, true, 1))
+            block(Fixture(isolatedContext, db, scope, settings))
+        } }
         finally { scope.coroutineContext.job.cancelAndJoin(); db.close(); files.deleteRecursively() }
     }
 
@@ -101,6 +107,8 @@ class DocumentDraftRepositoryDeviceTest {
         assertEquals(f.category.name, recovered.categoryName)
         assertEquals(DocumentEffect.ENHANCED, f.db.documentDraftDao().find(first.id)!!.effect)
         assertNull(restarted.editable.first())
+        f.db.categoryDao().insert(CategoryEntity("other", "其他", 1, true, 2))
+        f.settings.setStorageRoot(f.root.copy(treeUri = "content://fixture/root-b"))
         val second = restarted.reserve(f.category.copy(id = "other", name = "其他"),
             f.root.copy(treeUri = "content://fixture/root-b")).getOrThrow()
         f.writePhoto(second.file)
@@ -201,12 +209,12 @@ class DocumentDraftRepositoryDeviceTest {
         val allowSave = AtomicBoolean(false)
         @Volatile var writes = 0
         override suspend fun prepareRoot(treeUri: Uri, categories: List<Category>) = Result.success(StorageRoot(treeUri.toString(), "fixture", 1))
-        override suspend fun listCategoryDirectories(treeUri: Uri) = Result.success(emptyList<String>())
-        override suspend fun countCategoryMedia(treeUri: Uri, categoryNames: List<String>) = Result.success(emptyMap<String, Int>())
-        override suspend fun ensureCategory(treeUri: Uri, categoryName: String) = Result.success(Unit)
-        override suspend fun categoryDirectoryUri(treeUri: Uri, categoryName: String) = Result.success(treeUri)
-        override suspend fun renameCategoryDirectory(treeUri: Uri, oldName: String, newName: String) = Result.success(Unit)
-        override suspend fun deleteCategoryDirectoryWithContents(treeUri: Uri, categoryName: String) = Result.success(Unit)
+        override suspend fun listCategoryDirectories(treeUri: Uri, groupName: String?) = Result.success(emptyList<String>())
+        override suspend fun countCategoryMedia(treeUri: Uri, categoryNames: List<String>, groupName: String?) = Result.success(emptyMap<String, Int>())
+        override suspend fun ensureCategory(treeUri: Uri, categoryName: String, groupName: String?) = Result.success(Unit)
+        override suspend fun categoryDirectoryUri(treeUri: Uri, categoryName: String, groupName: String?) = Result.success(treeUri)
+        override suspend fun renameCategoryDirectory(treeUri: Uri, oldName: String, newName: String, groupName: String?) = Result.success(Unit)
+        override suspend fun deleteCategoryDirectoryWithContents(treeUri: Uri, categoryName: String, groupName: String?) = Result.success(Unit)
         override suspend fun reserveTarget(treeUri: Uri, category: Category, mediaKind: MediaKind) = Result.success(Uri.parse("content://fixture/target"))
         override suspend fun storeTempMedia(treeUri: Uri, tempFile: File, category: Category, mediaKind: MediaKind) = storeTempMediaToTarget(treeUri, tempFile, category, mediaKind)
         override suspend fun storeTempMediaToTarget(targetUri: Uri, tempFile: File, category: Category, mediaKind: MediaKind): CaptureResult {

@@ -282,6 +282,7 @@ internal fun CameraScreen(
     }
 
     fun capturePhoto() {
+        if (state.directoryLocked) return
         if (state.captureMode == CaptureMode.DOCUMENT) {
             viewModel.beginDocumentCapture { reservation ->
                 val boundary = controller.freezeDocumentBoundary()
@@ -316,6 +317,7 @@ internal fun CameraScreen(
     }
 
     fun startVideoFromLongPress() {
+        if (state.directoryLocked) return
         if (state.captureMode == CaptureMode.DOCUMENT) return
         if (!audioPermissionGranted) {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -791,12 +793,12 @@ internal fun CameraScreen(
                                     .border(5.dp, Color.White, CircleShape)
                                     .semantics { contentDescription = if (state.captureMode == CaptureMode.DOCUMENT) "拍摄文档" else "拍照，长按录像" }
                                     .combinedClickable(
-                                        enabled = !state.controlsLocked && !state.captureQueueFull && state.category != null,
+                                        enabled = !state.controlsLocked && !state.directoryLocked && !state.captureQueueFull && state.category != null,
                                         onClick = ::capturePhoto,
                                         onLongClick = if (state.captureMode == CaptureMode.PHOTO) ::startVideoFromLongPress else null,
                                     ),
                                 shape = CircleShape,
-                                color = if (state.controlsLocked || state.captureQueueFull) Color.Gray else Color.White.copy(alpha = 0.88f),
+                                color = if (state.controlsLocked || state.directoryLocked || state.captureQueueFull) Color.Gray else Color.White.copy(alpha = 0.88f),
                             ) {
                                 if (state.controlsLocked || state.captureQueueFull) Box(contentAlignment = Alignment.Center) {
                                     CircularProgressIndicator(Modifier.size(32.dp), color = Color.White)
@@ -860,6 +862,9 @@ internal fun CameraScreen(
                             modifier = Modifier.width(22.dp),
                         )
                     }
+                }
+                if (state.directoryLocked) {
+                    Text("该分类正在变更目录，可切换到其他分类拍摄", color = Color(0xFFFFD34E), style = MaterialTheme.typography.labelSmall)
                 }
                 if (state.pendingCaptureCount > 0) {
                     Text(

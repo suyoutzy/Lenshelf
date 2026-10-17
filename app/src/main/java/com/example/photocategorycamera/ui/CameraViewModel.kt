@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import com.example.photocategorycamera.data.blocksCategory
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import com.example.photocategorycamera.domain.CaptureMode
@@ -54,6 +56,7 @@ data class CameraUiState(
     val documentCapturing: Boolean = false,
     val documentEffect: DocumentEffect = DocumentEffect.ORIGINAL,
     internal val documentDisplay: DocumentDisplay? = null,
+    val directoryLocked: Boolean = false,
 ) {
     val captureQueueFull: Boolean get() = pendingCaptureCount >= com.example.photocategorycamera.data.CaptureTaskRepository.MAX_OUTSTANDING
     val controlsLocked: Boolean get() = video.isActive || documentCapturing
@@ -78,14 +81,18 @@ class CameraViewModel(
 
     init {
         viewModelScope.launch {
-            val category = container.categories.findById(categoryId)
-            val settings = container.settings.settings.first()
-            mutableState.value = mutableState.value.copy(
-                category = category,
-                activeCategories = container.categories.getAll().filter { it.isActive },
-                storageRoot = settings.storageRoot,
-                canRetry = settings.pendingCapture != null,
-            )
+            container.initialization.await()
+            combine(container.categories.categories, container.settings.settings, container.directoryOperations.pending) {
+                categories, settings, operations -> Triple(categories, settings, operations)
+            }.collectLatest { (categories, settings, operations) ->
+                val selected = categories.firstOrNull { it.id == (mutableState.value.category?.id ?: categoryId) }
+                mutableState.value = mutableState.value.copy(
+                    category = selected,
+                    activeCategories = categories.filter { it.isActive && it.groupId == selected?.groupId },
+                    storageRoot = settings.storageRoot,
+                    directoryLocked = selected == null || selected.needsHomeMigration || operations.any { it.blocksCategory(selected.id, selected.groupId) },
+                )
+            }
         }
         viewModelScope.launch {
             container.captureTasks.outstanding.collectLatest { tasks ->
@@ -136,7 +143,7 @@ class CameraViewModel(
         val snapshot = mutableState.value
         val category = snapshot.category ?: return
         val root = snapshot.storageRoot ?: return
-        if (snapshot.controlsLocked || snapshot.captureQueueFull) return
+        if (snapshot.controlsLocked || snapshot.captureQueueFull || snapshot.directoryLocked) return
         latestDocumentId = null
         mutableState.value = snapshot.copy(documentCapturing = true, documentDisplay = null)
         viewModelScope.launch {
@@ -173,7 +180,7 @@ class CameraViewModel(
         val snapshot = mutableState.value
         val category = snapshot.category
         val root = snapshot.storageRoot
-        if (snapshot.controlsLocked || snapshot.captureQueueFull || category == null || root == null) {
+        if (snapshot.controlsLocked || snapshot.directoryLocked || snapshot.captureQueueFull || category == null || root == null) {
             CaptureEventLog.record(
                 appContext,
                 "capture_rejected",
@@ -200,7 +207,7 @@ class CameraViewModel(
         if (snapshot.captureMode == CaptureMode.DOCUMENT) return false
         val category = snapshot.category
         val root = snapshot.storageRoot
-        if (snapshot.controlsLocked || snapshot.captureQueueFull || category == null || root == null) return false
+        if (snapshot.controlsLocked || snapshot.directoryLocked || snapshot.captureQueueFull || category == null || root == null) return false
         val usable = appContext.filesDir.usableSpace
         val reserve = max(MIN_CACHE_RESERVE_BYTES, usable / 10L)
         val budget = usable - reserve
@@ -217,7 +224,8 @@ class CameraViewModel(
             container.captureTasks.reserve(category, root, MediaKind.VIDEO) {
                 createRecoveryFile("video_", ".mp4")
             }.onSuccess { reservation ->
-                onPrepared(VideoPreparation(reservation.id, reservation.tempFile, budget, category.name))
+                frozenCategory = reservation.category
+                onPrepared(VideoPreparation(reservation.id, reservation.tempFile, budget, reservation.category.directoryLabel))
             }.onFailure { error ->
                 clearFrozenVideoTarget()
                 mutableState.value = mutableState.value.copy(
@@ -282,7 +290,7 @@ class CameraViewModel(
         mutableState.value = mutableState.value.copy(
             isSaving = false,
             message = buildString {
-                append("视频已录制，正在后台保存到“${category.name}”")
+                append("视频已录制，正在后台保存到“${category.directoryLabel}”")
                 controllerWarning?.let { append("；$it") }
             },
             video = VideoRecordingState(),

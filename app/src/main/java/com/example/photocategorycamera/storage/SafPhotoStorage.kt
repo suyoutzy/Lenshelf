@@ -14,6 +14,8 @@ import com.example.photocategorycamera.domain.CaptureResult
 import com.example.photocategorycamera.domain.CaptureStatus
 import com.example.photocategorycamera.domain.BinaryContentVerifier
 import com.example.photocategorycamera.domain.Category
+import com.example.photocategorycamera.domain.CategoryNameValidator
+import com.example.photocategorycamera.storage.operations.SafDirectoryBackend
 import com.example.photocategorycamera.domain.MediaKind
 import com.example.photocategorycamera.domain.MediaFileClassifier
 import com.example.photocategorycamera.domain.PendingMedia
@@ -47,7 +49,7 @@ class SafPhotoStorage(
                 val root = requireWritableRoot(treeUri)
                 ensureNoMedia(root)
                 verifyWritable(root)
-                categories.filter { it.isActive }.forEach { ensureDirectory(root, it.name) }
+                categories.filter { it.isActive }.forEach { ensureDirectory(groupDirectory(root, it.groupName, create = true), it.name) }
                 StorageRoot(
                     treeUri = treeUri.toString(),
                     displayName = root.name ?: "已授权目录",
@@ -56,49 +58,30 @@ class SafPhotoStorage(
             }
         }
 
-    override suspend fun listCategoryDirectories(treeUri: Uri): Result<List<String>> =
+    override suspend fun listCategoryDirectories(treeUri: Uri, groupName: String?): Result<List<String>> =
         withContext(Dispatchers.IO) {
             runCatching {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
-                val root = requireWritableRoot(treeUri)
-                root.listFiles()
-                    .filter(DocumentFile::isDirectory)
-                    .mapNotNull(DocumentFile::getName)
+                val parent = groupDirectory(requireWritableRoot(treeUri), groupName, create = false)
+                SafDirectoryBackend(resolver).children(parent.uri.toString())
+                    .filter { it.directory }.map { it.name }
                     .sortedWith(String.CASE_INSENSITIVE_ORDER)
             }
         }
 
-    override suspend fun countCategoryMedia(treeUri: Uri, categoryNames: List<String>): Result<Map<String, Int>> =
+    override suspend fun countCategoryMedia(treeUri: Uri, categoryNames: List<String>, groupName: String?): Result<Map<String, Int>> =
         withContext(Dispatchers.IO) {
             try {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效" }
-                val columns = arrayOf(
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    DocumentsContract.Document.COLUMN_MIME_TYPE,
-                )
-                fun children(id: String) = resolver.query(
-                    DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, id),
-                    columns, null, null, null,
-                ) ?: throw IOException("无法读取分类文件夹")
-                val directoryIds = mutableMapOf<String, String>()
-                children(DocumentsContract.getTreeDocumentId(treeUri)).use { cursor ->
-                    while (cursor.moveToNext()) {
-                        if (cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            directoryIds[cursor.getString(1)] = cursor.getString(0)
-                        }
-                    }
-                }
+                val backend = SafDirectoryBackend(resolver)
+                val parent = groupDirectory(requireWritableRoot(treeUri), groupName, create = false)
+                val directories = backend.children(parent.uri.toString()).filter { it.directory }.associateBy { it.name }
                 val counts = categoryNames.associateWith { name ->
                     coroutineContext.ensureActive()
-                    val id = directoryIds[name]
-                    if (id == null) 0 else children(id).use { cursor ->
-                        var count = 0
-                        while (cursor.moveToNext()) {
-                            coroutineContext.ensureActive()
-                            if (MediaFileClassifier.isMedia(cursor.getString(1).orEmpty(), cursor.getString(2))) count++
-                        }
-                        count
+                    val directory = directories[name]
+                    if (directory == null) 0 else backend.children(directory.uri).count {
+                        coroutineContext.ensureActive()
+                        !it.directory && MediaFileClassifier.isMedia(it.name, it.mimeType)
                     }
                 }
                 Result.success(counts)
@@ -109,34 +92,34 @@ class SafPhotoStorage(
             }
         }
 
-    override suspend fun ensureCategory(treeUri: Uri, categoryName: String): Result<Unit> =
+    override suspend fun ensureCategory(treeUri: Uri, categoryName: String, groupName: String?): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val root = requireWritableRoot(treeUri)
                 ensureNoMedia(root)
-                ensureDirectory(root, categoryName)
+                ensureDirectory(groupDirectory(root, groupName, create = true), categoryName)
                 Unit
             }
         }
 
-    override suspend fun categoryDirectoryUri(treeUri: Uri, categoryName: String): Result<Uri> =
+    override suspend fun categoryDirectoryUri(treeUri: Uri, categoryName: String, groupName: String?): Result<Uri> =
         withContext(Dispatchers.IO) {
             runCatching {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
                 val root = requireWritableRoot(treeUri)
-                ensureDirectory(root, categoryName).uri
+                ensureDirectory(groupDirectory(root, groupName, create = true), categoryName).uri
             }
         }
 
-    override suspend fun renameCategoryDirectory(treeUri: Uri, oldName: String, newName: String): Result<Unit> =
+    override suspend fun renameCategoryDirectory(treeUri: Uri, oldName: String, newName: String, groupName: String?): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
-                val root = requireWritableRoot(treeUri)
-                val directory = root.findFile(oldName)
+                val parent = groupDirectory(requireWritableRoot(treeUri), groupName, create = false)
+                val directory = parent.findFile(oldName)
                     ?: throw IOException("原分类文件夹不存在，未修改分类名称")
                 if (!directory.isDirectory) throw IOException("“$oldName”不是分类目录，未执行重命名")
-                val conflicting = root.listFiles().firstOrNull { file ->
+                val conflicting = parent.listFiles().firstOrNull { file ->
                     file.uri != directory.uri && file.name.equals(newName, ignoreCase = true)
                 }
                 if (conflicting != null) throw IOException("同名文件夹已存在")
@@ -145,12 +128,12 @@ class SafPhotoStorage(
             }
         }
 
-    override suspend fun deleteCategoryDirectoryWithContents(treeUri: Uri, categoryName: String): Result<Unit> =
+    override suspend fun deleteCategoryDirectoryWithContents(treeUri: Uri, categoryName: String, groupName: String?): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
-                val root = requireWritableRoot(treeUri)
-                val directory = root.findFile(categoryName) ?: return@runCatching Unit
+                val parent = groupDirectory(requireWritableRoot(treeUri), groupName, create = false)
+                val directory = parent.findFile(categoryName) ?: return@runCatching Unit
                 if (!directory.isDirectory) throw IOException("“$categoryName”不是分类目录，未执行删除")
                 if (!directory.delete()) throw IOException("分类文件夹及其中内容删除失败")
             }
@@ -179,7 +162,7 @@ class SafPhotoStorage(
                 error = "仍有媒体文件等待恢复，请先完成重试",
             )
         }
-        val pending = PendingMedia(tempFile.absolutePath, category.id, category.name, mediaKind)
+        val pending = PendingMedia(tempFile.absolutePath, category.id, category.name, mediaKind, category.groupId, category.groupName)
         settings.setPendingCapture(pending)
         copyPending(treeUri, pending)
     }
@@ -190,7 +173,7 @@ class SafPhotoStorage(
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
                 val root = requireWritableRoot(treeUri)
                 ensureNoMedia(root)
-                val directory = ensureDirectory(root, category.name)
+                val directory = ensureDirectory(groupDirectory(root, category.groupName, create = true), category.name)
                 val fileName = nextAvailableName(directory, mediaKind)
                 val mimeType = if (mediaKind == MediaKind.VIDEO) "video/mp4" else "image/jpeg"
                 directory.createFile(mimeType, fileName)?.uri ?: throw IOException("无法在分类目录中创建媒体文件")
@@ -265,7 +248,7 @@ class SafPhotoStorage(
             require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
             val root = requireWritableRoot(treeUri)
             ensureNoMedia(root)
-            val categoryDirectory = ensureDirectory(root, pending.categoryName)
+            val categoryDirectory = ensureDirectory(groupDirectory(root, pending.groupName, create = true), pending.categoryName)
             val fileName = nextAvailableName(categoryDirectory, pending.mediaKind)
             val mimeType = if (pending.mediaKind == MediaKind.VIDEO) "video/mp4" else "image/jpeg"
             target = categoryDirectory.createFile(mimeType, fileName)
@@ -332,13 +315,69 @@ class SafPhotoStorage(
     }
 
     private fun ensureDirectory(root: DocumentFile, name: String): DocumentFile {
-        val existing = root.findFile(name)
+        validateDirectoryName(name)
+        val backend = SafDirectoryBackend(resolver)
+        val node = backend.children(root.uri.toString()).firstOrNull { it.name.equals(name, ignoreCase = true) }
+        val existing = if (node != null) root.findFile(node.name)
+            ?: throw IOException("目录提供方无法读取已存在的目录") else null
         if (existing != null) {
             if (!existing.isDirectory) throw IOException("“$name”已存在，但不是目录")
+            if (existing.name != name) throw IOException("存在大小写不同的同名目录，请先处理名称冲突")
             if (!existing.canWrite()) throw IOException("分类目录“$name”不可写")
             return existing
         }
-        return root.createDirectory(name) ?: throw IOException("无法创建分类目录“$name”")
+        val created = root.createDirectory(name) ?: throw IOException("无法创建分类目录“$name”")
+        if (created.name != name) throw IOException("目录提供方未保留名称“$name”，请检查目录")
+        return created
+    }
+
+    private fun validateDirectoryName(name: String) {
+        val validation = CategoryNameValidator.validate(name)
+        require(validation.isValid && validation.normalizedName == name && name != "." && name != "..") { "目录名称无效" }
+    }
+
+    private fun groupDirectory(root: DocumentFile, name: String?, create: Boolean): DocumentFile {
+        if (name == null) return root
+        validateDirectoryName(name)
+        if (create) return ensureDirectory(root, name)
+        val node = SafDirectoryBackend(resolver).children(root.uri.toString()).singleOrNull { it.name == name }
+            ?: throw IOException("一级文件夹“$name”不存在")
+        if (!node.directory) throw IOException("“$name”不是一级文件夹")
+        return root.findFile(name)?.takeIf { it.uri.toString() == node.uri }
+            ?: throw IOException("无法访问一级文件夹")
+    }
+
+    override suspend fun groupDirectoryUri(treeUri: Uri, groupName: String?): Result<Uri> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(hasPersistedAccess(treeUri)) { "目录授权已失效，请重新授权" }
+            groupDirectory(requireWritableRoot(treeUri), groupName, create = false).uri
+        }
+    }
+
+    override suspend fun createGroupDirectory(treeUri: Uri, name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(hasPersistedAccess(treeUri)) { "目录授权已失效，请重新授权" }
+            validateDirectoryName(name)
+            val root = requireWritableRoot(treeUri)
+            val backend = SafDirectoryBackend(resolver)
+            check(backend.children(root.uri.toString()).none { it.name.equals(name, ignoreCase = true) }) { "根目录已有同名文件或文件夹，不能创建一级文件夹" }
+            val created = backend.create(root.uri.toString(), name, true, DocumentsContract.Document.MIME_TYPE_DIR)
+            check(created.name == name && created.directory) { "目录提供方未保留请求的文件夹名称" }
+        }
+    }
+
+    override suspend fun deleteEmptyGroupDirectory(treeUri: Uri, name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(hasPersistedAccess(treeUri)) { "目录授权已失效，请重新授权" }
+            validateDirectoryName(name)
+            val root = requireWritableRoot(treeUri)
+            val backend = SafDirectoryBackend(resolver)
+            val node = backend.children(root.uri.toString()).singleOrNull { it.name == name }
+            if (node != null) {
+                check(node.directory && backend.children(node.uri).isEmpty()) { "一级文件夹中仍有文件，请先转移或清理" }
+                backend.delete(node.uri)
+            }
+        }
     }
 
     private fun nextAvailableName(directory: DocumentFile, mediaKind: MediaKind): String {

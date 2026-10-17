@@ -52,6 +52,7 @@ class DocumentDraftRepository(
                         id, source.absolutePath, category.id, category.name, root.treeUri,
                         effectValue = effect.name, stage = "AUTO_CAPTURING", editingSlot = null,
                         createdAt = System.currentTimeMillis(),
+                        groupId = category.groupId, groupName = category.groupName,
                     )).getOrThrow()
                     DocumentReservation(id, source)
                 } catch (error: Exception) { source.delete(); throw error }

@@ -1,9 +1,11 @@
 package com.example.photocategorycamera.data
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.photocategorycamera.domain.Category
+import com.example.photocategorycamera.domain.CategoryGroup
 import com.example.photocategorycamera.domain.MediaKind
 
 enum class CaptureTaskStage {
@@ -28,8 +30,10 @@ data class CaptureTaskEntity(
     val error: String? = null,
     val createdAt: Long,
     val updatedAt: Long,
+    @ColumnInfo(defaultValue = "'home'") val groupId: String = CategoryGroup.HOME_ID,
+    @ColumnInfo(defaultValue = "NULL") val groupName: String? = null,
 ) {
     val kind: MediaKind get() = MediaKind.entries.firstOrNull { it.name == mediaKind } ?: MediaKind.PHOTO
     val taskStage: CaptureTaskStage get() = CaptureTaskStage.entries.firstOrNull { it.name == stage } ?: CaptureTaskStage.FAILED
-    fun category() = Category(categoryId, categoryName, 0, true, createdAt)
+    fun category() = Category(categoryId, categoryName, 0, true, createdAt, groupId, groupName)
 }

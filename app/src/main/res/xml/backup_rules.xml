@@ -4,4 +4,5 @@
     <exclude domain="sharedpref" path="." />
     <exclude domain="file" path="capture-recovery/" />
     <exclude domain="file" path="document-drafts/" />
+    <exclude domain="file" path="directory-journals/" />
 </full-backup-content>

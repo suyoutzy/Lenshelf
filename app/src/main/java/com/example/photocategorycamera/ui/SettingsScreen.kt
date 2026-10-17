@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -39,6 +40,7 @@ internal fun SettingsScreen(
     onBack: () -> Unit,
     onChooseDirectory: () -> Unit,
     onFolderOpenModeChanged: (FolderOpenMode) -> Unit,
+    onOpenRoot: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -54,14 +56,19 @@ internal fun SettingsScreen(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
-                    Text("当前根目录", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("当前根目录", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        IconButton(onClick = onOpenRoot, enabled = state.storageRoot != null) {
+                            Icon(Icons.Default.FolderOpen, "打开根目录")
+                        }
+                    }
                     Spacer(Modifier.height(6.dp))
                     Text(state.storageRoot?.displayName.orEmpty(), style = MaterialTheme.typography.titleLarge)
                     Text(state.storageRoot?.treeUri.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(18.dp))
-                    Button(onClick = onChooseDirectory, Modifier.fillMaxWidth()) { Text("修改根目录") }
+                    Button(onClick = onChooseDirectory, Modifier.fillMaxWidth()) { Text(if (state.rootSwitchLocked) "重新授权原根目录" else "修改根目录") }
                     Spacer(Modifier.height(10.dp))
-                    Text("只影响未来拍摄；旧目录和历史照片不会移动或删除。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (state.rootSwitchLocked) "目录操作尚未完成，请选择当前的原根目录恢复授权；暂时不能更换根目录。" else "只影响未来拍摄；旧目录和历史照片不会移动或删除。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer) {
@@ -82,7 +89,7 @@ internal fun SettingsScreen(
                         Column(Modifier.weight(1f)) {
                             Text("小米文件管理兼容", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "优先用小米文件管理打开分类目录；关闭时使用 Android 通用方式",
+                                "优先用小米文件管理打开根目录和分类目录；关闭时使用 Android 通用方式",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

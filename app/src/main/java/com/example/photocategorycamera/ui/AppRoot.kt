@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -33,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
@@ -45,9 +47,11 @@ import com.example.photocategorycamera.AppContainer
 import com.example.photocategorycamera.domain.FolderOpenMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val HOME = "home"
 private const val CATEGORIES = "categories"
+private const val GROUPS = "groups"
 private const val SETTINGS = "settings"
 private const val CAMERA = "camera"
 
@@ -59,12 +63,17 @@ fun AppRoot(
 ) {
     val state by appViewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val folderFeedback = remember { SnackbarHostState() }
     val context = LocalContext.current
     val xiaomiDevice = remember { isXiaomiDevice() }
 
     LaunchedEffect(state.message) {
         state.message?.let {
-            snackbar.showSnackbar(it)
+            if (it.startsWith("已新增文件夹")) {
+                withTimeoutOrNull(1_400) { folderFeedback.showSnackbar(it) }
+            } else {
+                snackbar.showSnackbar(it)
+            }
             appViewModel.clearMessage()
         }
     }
@@ -80,6 +89,8 @@ fun AppRoot(
                         LaunchedEffect(
                             homeLifecycle,
                             state.storageRoot?.treeUri,
+                            state.selectedGroup.id,
+                            state.selectedGroup.name,
                             state.categories.map { it.id to it.isActive },
                             state.pendingCaptureCount,
                         ) {
@@ -107,6 +118,10 @@ fun AppRoot(
                             onDiscardFailed = appViewModel::discardFailedCaptures,
                             onSaveLegacyDocument = appViewModel::saveLegacyDocument,
                             onDiscardDocument = appViewModel::discardDocument,
+                            onSelectGroup = appViewModel::selectGroup,
+                            onManageGroups = { navController.navigate(GROUPS) },
+                            onRetryDirectoryOperation = appViewModel::retryDirectoryOperation,
+                            onMigrateHome = appViewModel::migrateHomeCategories,
                         )
                     }
                     composable(CATEGORIES) {
@@ -119,7 +134,23 @@ fun AppRoot(
                             onMove = appViewModel::moveCategory,
                             onRename = appViewModel::renameCategory,
                             onDelete = appViewModel::deleteCategory,
+                            onTransfer = appViewModel::transferCategory,
+                            onReorder = appViewModel::reorderCategories,
+                            onDropTransfer = appViewModel::dropTransferCategory,
+                            onRetryDirectoryOperation = appViewModel::retryDirectoryOperation,
                         )
+                    }
+                    composable(GROUPS) {
+                        GroupManagementScreen(state = state, onBack = navController::popBackStack,
+                            onAdd = { name, complete -> appViewModel.addGroup(name) { success ->
+                                complete(success)
+                                if (success) navController.popBackStack(HOME, inclusive = false)
+                            } },
+                            onMove = appViewModel::moveGroup,
+                            onReorder = appViewModel::reorderGroups,
+                            onRename = appViewModel::renameGroup,
+                            onDelete = appViewModel::deleteGroup,
+                            onRetryDirectoryOperation = appViewModel::retryDirectoryOperation)
                     }
                     composable(SETTINGS) {
                         SettingsScreen(
@@ -128,6 +159,14 @@ fun AppRoot(
                             onBack = navController::popBackStack,
                             onChooseDirectory = onChooseDirectory,
                             onFolderOpenModeChanged = appViewModel::setFolderOpenMode,
+                            onOpenRoot = {
+                                appViewModel.resolveRootDirectory { uri ->
+                                    val mode = if (xiaomiDevice) state.folderOpenMode else FolderOpenMode.SYSTEM
+                                    if (!openDirectory(context, uri, mode)) {
+                                        appViewModel.reportMessage("当前文件管理器不支持直接打开根目录")
+                                    }
+                                }
+                            },
                         )
                     }
                     composable("$CAMERA/{categoryId}") { entry ->
@@ -157,6 +196,17 @@ fun AppRoot(
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+        SnackbarHost(folderFeedback, Modifier.align(Alignment.Center).padding(horizontal = 24.dp)) { data ->
+            Surface(
+                modifier = Modifier.widthIn(max = 320.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.68f),
+            ) {
+                Text(data.visuals.message, Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                    style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            }
+        }
         if (state.busy) {
             Box(
                 Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)),

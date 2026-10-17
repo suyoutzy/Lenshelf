@@ -1,6 +1,7 @@
 package com.example.photocategorycamera.data
 
 import androidx.room.Dao
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.Insert
@@ -9,6 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Update
 import com.example.photocategorycamera.domain.DocumentEffect
+import com.example.photocategorycamera.domain.CategoryGroup
 import com.example.photocategorycamera.domain.DocumentQuad
 import kotlinx.coroutines.flow.Flow
 
@@ -26,6 +28,8 @@ data class DocumentDraftEntity(
     val editingSlot: Int? = 1,
     val replacementPath: String? = null,
     val createdAt: Long,
+    @ColumnInfo(defaultValue = "'home'") val groupId: String = CategoryGroup.HOME_ID,
+    @ColumnInfo(defaultValue = "NULL") val groupName: String? = null,
 ) {
     val quad: DocumentQuad get() = DocumentQuad.decode(quadValue) ?: DocumentQuad.FULL_IMAGE
     val effect: DocumentEffect get() = DocumentEffect.entries.firstOrNull { it.name == effectValue } ?: DocumentEffect.ORIGINAL

@@ -24,7 +24,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 
-data class CaptureReservation(val id: String, val tempFile: File)
+data class CaptureReservation(val id: String, val tempFile: File, val category: Category)
 
 class CaptureTaskRepository(
     private val context: Context,
@@ -52,14 +52,17 @@ class CaptureTaskRepository(
         initialization.await()
         reservationMutex.withLock {
             database.withTransaction {
+                check(settings.settings.first().storageRoot?.treeUri == draft.rootTreeUri) { "保存根目录已变化，请重新拍摄" }
+                val latest = database.latestCaptureCategory(draft.categoryId)
+                val frozen = draft.copy(categoryName = latest.name, groupId = latest.groupId, groupName = latest.groupName)
                 check(dao.countOutstanding() < MAX_OUTSTANDING) { "保存队列已满，请稍后拍摄" }
                 val now = System.currentTimeMillis()
                 check(dao.insert(CaptureTaskEntity(
-                    draft.id, draft.sourcePath, draft.categoryId, draft.categoryName, draft.rootTreeUri,
+                    frozen.id, frozen.sourcePath, frozen.categoryId, frozen.categoryName, frozen.rootTreeUri,
                     MediaKind.PHOTO.name, CaptureTaskStage.DOCUMENT_PROCESSING.name,
-                    createdAt = now, updatedAt = now,
+                    createdAt = now, updatedAt = now, groupId = frozen.groupId, groupName = frozen.groupName,
                 )) != -1L) { "文档任务已存在" }
-                documentDao.insert(draft)
+                documentDao.insert(frozen)
             }
         }
     }
@@ -82,6 +85,7 @@ class CaptureTaskRepository(
                     check(dao.insert(CaptureTaskEntity(
                         id, processed.absolutePath, draft.categoryId, draft.categoryName, draft.rootTreeUri,
                         MediaKind.PHOTO.name, CaptureTaskStage.READY.name, createdAt = now, updatedAt = now,
+                        groupId = draft.groupId, groupName = draft.groupName,
                     )) != -1L) { "文档保存任务已存在" }
                 }
                 documentDao.update(draft.copy(stage = "QUEUED", editingSlot = null))
@@ -98,7 +102,9 @@ class CaptureTaskRepository(
         createTempFile: () -> File,
     ): Result<CaptureReservation> = runCatching {
         initialization.await()
-        reservationMutex.withLock {
+        reservationMutex.withLock { database.withTransaction {
+            check(settings.settings.first().storageRoot?.treeUri == root.treeUri) { "保存根目录已变化，请重新进入相机" }
+            val latest = database.latestCaptureCategory(category.id)
             check(dao.countOutstanding() < MAX_OUTSTANDING) { "待处理任务已满，请等待保存完成" }
             val now = System.currentTimeMillis()
             val id = UUID.randomUUID().toString()
@@ -107,13 +113,15 @@ class CaptureTaskRepository(
                 CaptureTaskEntity(
                     id = id,
                     tempPath = file.absolutePath,
-                    categoryId = category.id,
-                    categoryName = category.name,
+                    categoryId = latest.id,
+                    categoryName = latest.name,
                     rootTreeUri = root.treeUri,
                     mediaKind = kind.name,
                     stage = CaptureTaskStage.CAPTURING.name,
                     createdAt = now,
                     updatedAt = now,
+                    groupId = latest.groupId,
+                    groupName = latest.groupName,
                 ),
             )
             check(inserted != -1L) { "无法建立拍摄任务" }
@@ -123,8 +131,8 @@ class CaptureTaskRepository(
                 id,
                 values = mapOf("categoryId" to category.id, "categoryName" to category.name, "mediaKind" to kind.name),
             )
-            CaptureReservation(id, file)
-        }
+            CaptureReservation(id, file, latest)
+        } }
     }
 
     fun markReady(id: String, kind: MediaKind) {
@@ -242,6 +250,7 @@ class CaptureTaskRepository(
             CaptureTaskEntity(
                 id, pending.tempPath, pending.categoryId, pending.categoryName, root.treeUri,
                 pending.mediaKind.name, CaptureTaskStage.READY.name, createdAt = now, updatedAt = now,
+                groupId = pending.groupId, groupName = pending.groupName,
             ),
         )
         settings.clearPendingCapture()

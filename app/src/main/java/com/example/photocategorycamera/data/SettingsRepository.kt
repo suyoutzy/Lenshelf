@@ -13,6 +13,7 @@ import com.example.photocategorycamera.domain.PendingCapture
 import com.example.photocategorycamera.domain.MediaKind
 import com.example.photocategorycamera.domain.FolderOpenMode
 import com.example.photocategorycamera.domain.StorageRoot
+import com.example.photocategorycamera.domain.CategoryGroup
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -26,6 +27,7 @@ data class AppSettings(
     val folderOpenMode: FolderOpenMode = FolderOpenMode.SYSTEM,
     val cameraGridEnabled: Boolean = false,
     val videoStabilizationEnabled: Boolean = true,
+    val selectedGroupId: String = CategoryGroup.HOME_ID,
 )
 
 class SettingsRepository(context: Context, private val store: DataStore<Preferences> = context.settingsDataStore) {
@@ -37,9 +39,12 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
         val pendingCategoryId = stringPreferencesKey("pending_category_id")
         val pendingCategoryName = stringPreferencesKey("pending_category_name")
         val pendingMediaKind = stringPreferencesKey("pending_media_kind")
+        val pendingGroupId = stringPreferencesKey("pending_group_id")
+        val pendingGroupName = stringPreferencesKey("pending_group_name")
         val folderOpenMode = stringPreferencesKey("folder_open_mode")
         val cameraGridEnabled = booleanPreferencesKey("camera_grid_enabled")
         val videoStabilizationEnabled = booleanPreferencesKey("video_stabilization_enabled")
+        val selectedGroupId = stringPreferencesKey("selected_group_id")
     }
 
     val settings: Flow<AppSettings> = store.data
@@ -60,6 +65,12 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
             it[Keys.pendingCategoryId] = pending.categoryId
             it[Keys.pendingCategoryName] = pending.categoryName
             it[Keys.pendingMediaKind] = pending.mediaKind.name
+            it[Keys.pendingGroupId] = pending.groupId
+            if (pending.groupId == CategoryGroup.HOME_ID || pending.groupName == null) {
+                it.remove(Keys.pendingGroupName)
+            } else {
+                it[Keys.pendingGroupName] = pending.groupName
+            }
         }
     }
 
@@ -69,6 +80,8 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
             it.remove(Keys.pendingCategoryId)
             it.remove(Keys.pendingCategoryName)
             it.remove(Keys.pendingMediaKind)
+            it.remove(Keys.pendingGroupId)
+            it.remove(Keys.pendingGroupName)
         }
     }
 
@@ -93,6 +106,10 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
         store.edit { it[Keys.videoStabilizationEnabled] = enabled }
     }
 
+    suspend fun setSelectedGroupId(groupId: String) {
+        store.edit { it[Keys.selectedGroupId] = groupId.ifBlank { CategoryGroup.HOME_ID } }
+    }
+
     private fun toSettings(preferences: Preferences): AppSettings {
         val root = preferences[Keys.rootUri]?.let { uri ->
             StorageRoot(
@@ -107,7 +124,10 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
             val mediaKind = preferences[Keys.pendingMediaKind]
                 ?.let { stored -> MediaKind.entries.firstOrNull { it.name == stored } }
                 ?: MediaKind.PHOTO
-            PendingCapture(path, id, name, mediaKind)
+            val groupId = preferences[Keys.pendingGroupId]?.takeIf { it.isNotBlank() } ?: CategoryGroup.HOME_ID
+            PendingCapture(path, id, name, mediaKind, groupId,
+                if (groupId == CategoryGroup.HOME_ID) null else preferences[Keys.pendingGroupName],
+            )
         }
         val folderOpenMode = preferences[Keys.folderOpenMode]
             ?.let { stored -> FolderOpenMode.entries.firstOrNull { it.name == stored } }
@@ -118,6 +138,7 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
             folderOpenMode = folderOpenMode,
             cameraGridEnabled = preferences[Keys.cameraGridEnabled] ?: false,
             videoStabilizationEnabled = preferences[Keys.videoStabilizationEnabled] ?: true,
+            selectedGroupId = preferences[Keys.selectedGroupId]?.takeIf { it.isNotBlank() } ?: CategoryGroup.HOME_ID,
         )
     }
 }

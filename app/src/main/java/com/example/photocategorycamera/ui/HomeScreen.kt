@@ -22,25 +22,26 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.FolderCopy
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,12 +50,16 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -62,9 +67,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.photocategorycamera.domain.Category
+import com.example.photocategorycamera.domain.CategoryGroup
 import com.example.photocategorycamera.domain.FolderOpenMode
 import com.example.photocategorycamera.domain.XiaomiFileManagerPath
-import kotlinx.coroutines.isActive
+import com.example.photocategorycamera.R
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -78,8 +84,11 @@ internal fun HomeScreen(
     onDiscardFailed: () -> Unit,
     onSaveLegacyDocument: (String) -> Unit,
     onDiscardDocument: (String) -> Unit,
+    onSelectGroup: (String) -> Unit = {},
+    onManageGroups: () -> Unit = {},
+    onRetryDirectoryOperation: (String) -> Unit = {},
+    onMigrateHome: () -> Unit = {},
 ) {
-    var introExpanded by rememberSaveable { mutableStateOf(false) }
     var confirmDiscardFailed by rememberSaveable { mutableStateOf(false) }
     var confirmDiscardDocument by rememberSaveable { mutableStateOf(false) }
     if (confirmDiscardDocument) {
@@ -126,7 +135,11 @@ internal fun HomeScreen(
                         )
                     }
                 },
-                actions = { IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") } },
+                actions = {
+                    IconButton(onClick = onManage) { Icon(painterResource(R.drawable.ic_manage_categories), "管理分类") }
+                    IconButton(onClick = onManageGroups) { Icon(Icons.Outlined.FolderCopy, "管理文件夹") }
+                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
@@ -135,73 +148,46 @@ internal fun HomeScreen(
                 color = MaterialTheme.colorScheme.background,
                 shadowElevation = 8.dp,
             ) {
-                OutlinedButton(
-                    onClick = onManage,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).navigationBarsPadding().height(50.dp),
-                ) {
-                    Icon(Icons.Default.Add, null)
-                    Text("管理分类")
+                Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GroupTab(state.groups.firstOrNull { it.isHome } ?: HOME_GROUP, state.selectedGroup.id, onSelectGroup)
+                    LazyRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(state.groups.filterNot { it.isHome }, key = CategoryGroup::id) { group ->
+                            GroupTab(group, state.selectedGroup.id, onSelectGroup)
+                        }
+                    }
                 }
             }
         },
     ) { padding ->
         LazyColumn(
-            Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp),
+            Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp).testTag("category-list"),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (state.homeMigrationLabels.isNotEmpty() && state.directoryOperations.isEmpty()) {
+                item(key = "home-migration") {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("常用分类等待迁移", style = MaterialTheme.typography.titleMedium)
+                            Text("${state.homeMigrationLabels.size} 个分类将迁入根目录下的“常用”文件夹；完成前暂不可拍摄。")
+                            state.homeMigrationIssue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                            TextButton(onClick = onMigrateHome) { Text("继续迁移常用分类") }
+                        }
+                    }
+                }
+            }
+            items(state.directoryOperations, key = { "operation-${it.id}" }) { operation ->
+                DirectoryOperationCard(operation, onRetryDirectoryOperation)
+            }
             state.documentDraft?.let { draft ->
                 item(key = "document-draft") {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text("旧版待确认文档", style = MaterialTheme.typography.titleMedium)
-                            Text("分类：" + draft.categoryName + " · 尚未归档")
+                            Text("分类：" + (state.documentDraftLabel ?: "${CategoryGroup.HOME_NAME}/${draft.categoryName}") + " · 尚未归档")
                             Row {
                                 TextButton(onClick = { onSaveLegacyDocument(draft.id) }, enabled = !state.busy) { Text("保存旧草稿") }
                                 TextButton(onClick = { confirmDiscardDocument = true }) { Text("丢弃") }
-                            }
-                        }
-                    }
-                }
-            }
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                ) {
-                    Column(Modifier.fillMaxWidth()) {
-                        Row(
-                            Modifier.fillMaxWidth().clickable { introExpanded = !introExpanded }.padding(horizontal = 16.dp, vertical = 13.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("选择一个分类", style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    "保存到 ${state.storageRoot?.displayName.orEmpty()}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Icon(
-                                if (introExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                if (introExpanded) "折叠说明" else "展开说明",
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        if (introExpanded) {
-                            Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 15.dp)) {
-                                Text("拍摄后自动保存，无需再次整理", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Spacer(Modifier.height(10.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                                ) {
-                                    Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Folder, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(state.storageRoot?.displayName.orEmpty(), style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
                             }
                         }
                     }
@@ -225,7 +211,8 @@ internal fun HomeScreen(
                                     },
                                     fontWeight = FontWeight.Bold,
                                 )
-                                Text("目标分类：${state.pendingCategoryName.orEmpty()}")
+                                state.pendingCategoryLabels.ifEmpty { listOf(state.pendingCategoryName.orEmpty()) }
+                                    .forEach { Text("目标分类：$it", style = MaterialTheme.typography.bodySmall) }
                                 state.failedCaptureError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                             }
                             Column(horizontalAlignment = Alignment.End) {
@@ -241,6 +228,7 @@ internal fun HomeScreen(
                 }
             }
             items(state.categories.filter { it.isActive }, key = Category::id) { category ->
+                val directoryLocked = category.id in state.directoryLockedCategoryIds
                 Card(
                     Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -252,7 +240,8 @@ internal fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Row(
-                            Modifier.weight(1f).clickable { onOpenCamera(category) }.padding(16.dp),
+                            Modifier.weight(1f).semantics { contentDescription = "拍摄${category.directoryLabel}" }
+                                .clickable(enabled = !directoryLocked) { onOpenCamera(category) }.padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
@@ -270,7 +259,9 @@ internal fun HomeScreen(
                             Column {
                                 Text(category.name, style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    state.categoryFileCounts[category.id]?.let { "$it 个文件" } ?: "暂无法统计",
+                                    if (category.needsHomeMigration) "等待迁入常用文件夹"
+                                    else if (directoryLocked) "目录正在变更，暂不可拍摄"
+                                    else state.categoryFileCounts[category.id]?.let { "$it 个文件" } ?: "暂无法统计",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -282,6 +273,7 @@ internal fun HomeScreen(
                         ) {
                             IconButton(
                                 onClick = { onOpenDirectory(category) },
+                                enabled = !directoryLocked,
                                 modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
                             ) {
                                 Icon(Icons.Default.Folder, "在文件管理器中打开${category.name}", tint = MaterialTheme.colorScheme.secondary)
@@ -290,7 +282,49 @@ internal fun HomeScreen(
                     }
                 }
             }
+            if (state.categories.none { it.isActive }) {
+                item { Text("当前文件夹暂无启用分类，可在“管理分类”中新建或恢复分类。",
+                    style = MaterialTheme.typography.bodyMedium) }
+            }
             item { Spacer(Modifier.height(8.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun GroupTab(group: CategoryGroup, selectedId: String, onSelect: (String) -> Unit) {
+    FilterChip(selected = group.id == selectedId, onClick = { onSelect(group.id) },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primary,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+        ),
+        modifier = Modifier.widthIn(max = 160.dp).semantics { contentDescription = "切换到${group.name}" },
+        label = { Text(shortGroupName(group.name), maxLines = 1, overflow = TextOverflow.Ellipsis) })
+}
+
+private fun shortGroupName(name: String): String =
+    if (name.codePointCount(0, name.length) <= 4) name else name.substring(0, name.offsetByCodePoints(0, 4)) + "…"
+
+@Composable
+internal fun DirectoryOperationCard(operation: DirectoryOperationUiState, onRetry: (String) -> Unit) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor =
+        if (operation.error != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(operation.status, style = MaterialTheme.typography.titleMedium)
+            Text("从：${operation.sourcePath}", style = MaterialTheme.typography.bodySmall)
+            Text("到：${operation.targetPath}", style = MaterialTheme.typography.bodySmall)
+            if (operation.error == null) Text("${when (operation.stage) {
+                "COPYING" -> "正在复制全部内容"
+                "VERIFYING", "VERIFY_NATIVE", "VERIFY_COPY" -> "正在校验内容"
+                "CLEANUP" -> "正在清理已校验的原目录"
+                "COMMITTING", "FILESYSTEM_DONE" -> "正在更新分类记录"
+                else -> "目录操作进行中"
+            }} · 保持应用打开以继续处理", style = MaterialTheme.typography.bodySmall)
+            operation.error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error)
+                Text("相关分类与文件夹保持锁定，重试后继续。", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { onRetry(operation.id) }) { Text("重试目录操作") }
+            }
         }
     }
 }

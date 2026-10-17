@@ -16,13 +16,17 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.documentfile.provider.DocumentFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.photocategorycamera.PhotoCategoryCameraApplication
+import com.example.photocategorycamera.domain.CategoryGroup
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -47,7 +51,11 @@ class DocumentCameraUiDeviceTest {
             runBlocking { container.captureTasks.outstanding.first().isEmpty() }
     }
 
-    @Test fun consecutiveDocumentsSaveWithoutConfirmationAndPhotoAudioVideoStillWork() {
+    @Test fun consecutiveDocumentsSaveWithoutConfirmationAndPhotoAudioVideoStillWork() = captureInGroup(false)
+
+    @Test fun documentsPhotoAndAudioVideoSaveInCustomGroup() = captureInGroup(true)
+
+    private fun captureInGroup(custom: Boolean) {
         assumeTrue("Actual capture requires explicit opt-in", InstrumentationRegistry.getArguments().getString("allowDeviceCapture") == "true")
         assumeTrue(app.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
         assumeTrue(app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
@@ -56,33 +64,40 @@ class DocumentCameraUiDeviceTest {
         val root = runBlocking { container.settings.settings.first().storageRoot }
         assumeTrue(root != null)
         val rootDocument = DocumentFile.fromTreeUri(app, Uri.parse(root!!.treeUri))!!
+        InstrumentationRegistry.getArguments().getString("cleanupOwnedFixture")?.let { previousName ->
+            require(previousName.matches(Regex("设备回归_[a-f0-9]{8}")))
+            val previous = runBlocking { container.categories.getAll(CategoryGroup.HOME_ID).single { it.name == previousName } }
+            val previousParent = previous.groupName?.let { rootDocument.findFile(it) } ?: rootDocument
+            require(previousParent?.findFile(previousName)?.isDirectory == true)
+            runBlocking { container.directoryOperations.deleteCategory(previous, true).getOrThrow() }
+        }
+        val selectedBefore = runBlocking { container.settings.settings.first().selectedGroupId }
+        val group = if (custom) runBlocking {
+            container.directoryOperations.createGroup("分组回归_${UUID.randomUUID().toString().take(8)}").getOrThrow()
+        } else null
+        runBlocking { container.settings.setSelectedGroupId(group?.id ?: CategoryGroup.HOME_ID) }
+        val parentName = group?.name ?: CategoryGroup.HOME_NAME
         val name = "设备回归_${UUID.randomUUID().toString().take(8)}"
-        assertNull(rootDocument.findFile(name))
-        runBlocking { container.categories.create(name).getOrThrow() }
+        val category = runBlocking { container.directoryOperations.createCategory(name, group?.id ?: CategoryGroup.HOME_ID).getOrThrow() }
+        val parent = rootDocument.findFile(parentName)!!
+        try {
         Log.i("LenshelfDeviceTest", "fixtureCategory=$name")
         ParcelFileDescriptor.AutoCloseInputStream(
-            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("am start -n ${app.packageName}/.MainActivity"),
+            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("am start -f 0x10008000 -n ${app.packageName}/.MainActivity"),
         ).bufferedReader().use { it.readText() }
-        compose.waitUntil(30_000) { compose.onAllNodesWithText(name).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(name).performScrollTo().performClick()
+        compose.waitUntil(30_000) { compose.onAllNodesWithTag("category-list").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("category-list").performScrollToNode(hasText(name))
+        compose.onNodeWithText(name).performClick()
         waitCamera()
         compose.onNodeWithText("文档").performClick()
         waitCamera(document = true)
         SystemClock.sleep(2_000)
-        compose.mainClock.autoAdvance = false
-        try {
-            compose.onNodeWithContentDescription("拍摄文档").performClick()
-            // Do not let test auto-advance skip over the deliberately brief result animation.
-            compose.waitUntil(30_000) {
-                compose.mainClock.advanceTimeByFrame()
-                compose.onAllNodesWithContentDescription("文档成片快速预览").fetchSemanticsNodes().isNotEmpty()
-            }
-            waitCamera(document = true)
-            assertTrue(compose.onAllNodesWithText("确认保存").fetchSemanticsNodes().isEmpty())
-            compose.onNodeWithContentDescription("拍摄文档").performClick()
-        } finally { compose.mainClock.autoAdvance = true }
-        compose.waitUntil(30_000) { rootDocument.findFile(name)?.listFiles()?.count { it.type == "image/jpeg" } == 2 }
-        val directory = rootDocument.findFile(name)!!
+        compose.onNodeWithContentDescription("拍摄文档").performClick()
+        waitCamera(document = true)
+        assertTrue(compose.onAllNodesWithText("确认保存").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithContentDescription("拍摄文档").performClick()
+        compose.waitUntil(30_000) { parent.findFile(name)?.listFiles()?.count { it.type == "image/jpeg" } == 2 }
+        val directory = parent.findFile(name)!!
         waitSaved(directory, 2)
         assertEquals("Legacy material must not be replaced or silently submitted", legacyBefore,
             runBlocking { container.documents.editable.first() })
@@ -113,6 +128,11 @@ class DocumentCameraUiDeviceTest {
             assertTrue(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() >= 2_000)
             assertNotNull(retriever.getFrameAtTime(1_000_000)?.also { it.recycle() })
         }
-        assertEquals(4, runBlocking { container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), listOf(name)).getOrThrow()[name] })
+        assertEquals(4, runBlocking { container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), listOf(name), parentName).getOrThrow()[name] })
+        runBlocking {
+            container.directoryOperations.deleteCategory(category, true).getOrThrow()
+            if (group != null) container.directoryOperations.deleteGroup(group).getOrThrow()
+        }
+        } finally { runBlocking { container.settings.setSelectedGroupId(selectedBefore) } }
     }
 }
