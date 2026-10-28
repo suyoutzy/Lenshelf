@@ -12,6 +12,7 @@ import androidx.datastore.core.DataStore
 import com.example.photocategorycamera.domain.PendingCapture
 import com.example.photocategorycamera.domain.MediaKind
 import com.example.photocategorycamera.domain.FolderOpenMode
+import com.example.photocategorycamera.domain.PhotoDateStampFormat
 import com.example.photocategorycamera.domain.StorageRoot
 import com.example.photocategorycamera.domain.CategoryGroup
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +27,8 @@ data class AppSettings(
     val pendingCapture: PendingCapture? = null,
     val folderOpenMode: FolderOpenMode = FolderOpenMode.SYSTEM,
     val cameraGridEnabled: Boolean = false,
+    val photoDateStampEnabled: Boolean = false,
+    val photoDateStampFormat: PhotoDateStampFormat = PhotoDateStampFormat.DATE,
     val videoStabilizationEnabled: Boolean = true,
     val selectedGroupId: String = CategoryGroup.HOME_ID,
 )
@@ -43,6 +46,8 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
         val pendingGroupName = stringPreferencesKey("pending_group_name")
         val folderOpenMode = stringPreferencesKey("folder_open_mode")
         val cameraGridEnabled = booleanPreferencesKey("camera_grid_enabled")
+        val photoDateStampEnabled = booleanPreferencesKey("photo_date_stamp_enabled")
+        val photoDateStampFormat = stringPreferencesKey("photo_date_stamp_format")
         val videoStabilizationEnabled = booleanPreferencesKey("video_stabilization_enabled")
         val selectedGroupId = stringPreferencesKey("selected_group_id")
     }
@@ -87,6 +92,14 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
 
     suspend fun setFolderOpenMode(mode: FolderOpenMode) {
         store.edit { it[Keys.folderOpenMode] = mode.name }
+    }
+
+    suspend fun setPhotoDateStampEnabled(enabled: Boolean) {
+        store.edit { it[Keys.photoDateStampEnabled] = enabled }
+    }
+
+    suspend fun setPhotoDateStampFormat(format: PhotoDateStampFormat) {
+        store.edit { it[Keys.photoDateStampFormat] = format.name }
     }
 
     suspend fun setCameraGridEnabled(enabled: Boolean) {
@@ -137,6 +150,8 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
             pendingCapture = pending,
             folderOpenMode = folderOpenMode,
             cameraGridEnabled = preferences[Keys.cameraGridEnabled] ?: false,
+            photoDateStampEnabled = preferences[Keys.photoDateStampEnabled] ?: false,
+            photoDateStampFormat = PhotoDateStampFormat.entries.firstOrNull { it.name == preferences[Keys.photoDateStampFormat] } ?: PhotoDateStampFormat.DATE,
             videoStabilizationEnabled = preferences[Keys.videoStabilizationEnabled] ?: true,
             selectedGroupId = preferences[Keys.selectedGroupId]?.takeIf { it.isNotBlank() } ?: CategoryGroup.HOME_ID,
         )

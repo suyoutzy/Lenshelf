@@ -229,6 +229,154 @@ class DocumentProcessorDeviceTest {
         } finally { source.delete() }
     }
 
+    @Test fun enhancedPaperReducesShadowAndPreservesColoredAndFaintStrokes() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = File.createTempFile("paper-shadow-", ".jpg", context.cacheDir)
+        val bitmap = Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888)
+        for (y in 0 until 600) for (x in 0 until 800) {
+            val paper = 150 + x * 85 / 799
+            bitmap.setPixel(x, y, Color.rgb(paper, paper, paper))
+        }
+        val canvas = Canvas(bitmap)
+        canvas.drawRect(80f, 100f, 650f, 106f, Paint().apply { color = Color.rgb(70, 70, 70) })
+        canvas.drawRect(80f, 170f, 650f, 176f, Paint().apply { color = Color.rgb(120, 120, 120) })
+        canvas.drawRect(80f, 250f, 300f, 270f, Paint().apply { color = Color.rgb(150, 35, 35) })
+        canvas.drawRect(400f, 250f, 650f, 270f, Paint().apply { color = Color.rgb(35, 70, 160) })
+        canvas.drawText("Lenshelf 0.9 - Paper notes", 80f, 345f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(65,65,65); textSize = 30f })
+        canvas.drawText("Faint strokes / Colored annotations", 80f, 505f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(125,125,125); textSize = 24f })
+        source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+        bitmap.recycle()
+        val old = processor.render(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, processingVersion = 1)
+        val enhanced = processor.render(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, processingVersion = 2)
+        try {
+            fun light(image: Bitmap, x: Int, y: Int) = Color.red(image.getPixel(x, y))
+            val oldDifference = kotlin.math.abs(light(old, 100, 400) - light(old, 700, 400))
+            val newDifference = kotlin.math.abs(light(enhanced, 100, 400) - light(enhanced, 700, 400))
+            assertTrue("Shadow remains: old=$oldDifference new=$newDifference", newDifference < oldDifference * 0.65)
+            assertTrue(light(enhanced, 100, 400) > light(old, 100, 400) + 20)
+            assertTrue(light(enhanced, 200, 160) - light(enhanced, 200, 172) > 20)
+            val red = enhanced.getPixel(200, 260); val blue = enhanced.getPixel(500, 260)
+            assertTrue(Color.red(red) > Color.green(red) + 45)
+            assertTrue(Color.blue(blue) > Color.red(blue) + 45)
+            if (InstrumentationRegistry.getArguments().getString("exportReviewSamples") == "true") {
+                val directory = File(context.filesDir, "v09-review").apply { mkdirs() }
+                source.copyTo(File(directory, "document-source.jpg"), overwrite = true)
+                processor.writeResult(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0,
+                    File(directory, "document-old.jpg"), processingVersion = 1)
+                processor.writeResult(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0,
+                    File(directory, "document-enhanced.jpg"), processingVersion = 2)
+            }
+        } finally { old.recycle(); enhanced.recycle(); source.delete() }
+    }
+
+    @Test fun grayPaperAndCreaseFixturesKeepHighlighterFaintInkAndThinLines() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (fixture in listOf("gray", "gradient", "crease")) {
+            val source = File.createTempFile("paper-$fixture-", ".jpg", context.cacheDir)
+            val output = File(source.parentFile, source.name + "-result.jpg")
+            val bitmap = Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(Color.rgb(240, 240, 240))
+            val canvas = Canvas(bitmap)
+            canvas.drawRect(120f, 220f, 680f, 270f, Paint().apply { color = Color.rgb(240, 235, 80) })
+            canvas.drawRect(120f, 300f, 680f, 302f, Paint().apply { color = Color.rgb(205, 205, 205) })
+            canvas.drawRect(120f, 350f, 680f, 351f, Paint().apply { color = Color.rgb(90, 90, 90) })
+            for (y in 0 until 600) for (x in 0 until 800) {
+                val lighting = when (fixture) {
+                    "gray" -> .80
+                    "gradient" -> .64 + .34 * x / 799.0
+                    else -> .98 - .28 * kotlin.math.exp(-.5 * ((x - 400) / 75.0) * ((x - 400) / 75.0))
+                }
+                val pixel = bitmap.getPixel(x, y)
+                bitmap.setPixel(x, y, Color.rgb((Color.red(pixel) * lighting).toInt(),
+                    (Color.green(pixel) * lighting).toInt(), (Color.blue(pixel) * lighting).toInt()))
+            }
+            source.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it)) }
+            bitmap.recycle()
+            val old = processor.render(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, processingVersion = 1)
+            processor.writeResult(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, output, processingVersion = 2)
+            val result = processor.loadUpright(output, 1000)
+            try {
+                fun light(image: Bitmap, x: Int, y: Int) = Color.red(image.getPixel(x, y))
+                assertTrue("$fixture faint ink lost", light(result, 200, 310) - light(result, 200, 300) > 8)
+                assertTrue("$fixture thin line lost", light(result, 200, 360) - light(result, 200, 350) > 40)
+                val yellow = result.getPixel(200, 245)
+                assertTrue("$fixture highlighter lost", Color.red(yellow) - Color.blue(yellow) > 70 &&
+                    Color.green(yellow) - Color.blue(yellow) > 70 && kotlin.math.abs(Color.red(yellow) - Color.green(yellow)) < 25)
+                if (fixture == "gray") assertTrue(light(result, 200, 500) > light(old, 200, 500) + 15)
+                else {
+                    val darkX = if (fixture == "crease") 400 else 60
+                    val oldDifference = kotlin.math.abs(light(old, darkX, 500) - light(old, 740, 500))
+                    val difference = kotlin.math.abs(light(result, darkX, 500) - light(result, 740, 500))
+                    assertTrue("$fixture shadow remains: old=$oldDifference new=$difference", difference < oldDifference * .8)
+                }
+                if (InstrumentationRegistry.getArguments().getString("exportReviewSamples") == "true") {
+                    val directory = File(context.filesDir, "v09-review").apply { mkdirs() }
+                    source.copyTo(File(directory, "corpus-$fixture-source.jpg"), overwrite = true)
+                    output.copyTo(File(directory, "corpus-$fixture-enhanced.jpg"), overwrite = true)
+                    processor.writeResult(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0,
+                        File(directory, "corpus-$fixture-old.jpg"), processingVersion = 1)
+                }
+            } finally { old.recycle(); result.recycle(); source.delete(); output.delete() }
+        }
+    }
+
+    @Test fun enhancedPaperRetainsLargeGrayPanelsAndTheirDifferentShades() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = File.createTempFile("printed-gray-panel-", ".jpg", context.cacheDir)
+        val bitmap = Bitmap.createBitmap(600, 400, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.rgb(240,240,240))
+        val canvas = Canvas(bitmap)
+        canvas.drawRect(80f, 80f, 300f, 320f, Paint().apply { color = Color.rgb(185,185,185) })
+        canvas.drawRect(300f, 80f, 520f, 320f, Paint().apply { color = Color.rgb(140,140,140) })
+        source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+        bitmap.recycle()
+        val output = File(source.parentFile, source.name + "-processed.jpg")
+        processor.writeResult(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, output, processingVersion = 2)
+        val enhanced = processor.loadUpright(output, 1000)
+        try {
+            val paper = Color.red(enhanced.getPixel(30, 200))
+            val lightPanel = Color.red(enhanced.getPixel(200, 200))
+            val darkPanel = Color.red(enhanced.getPixel(400, 200))
+            assertTrue("Gray panel erased: paper=$paper panel=$lightPanel", paper - lightPanel > 25)
+            assertTrue("Printed gray shades collapsed: $lightPanel vs $darkPanel", lightPanel - darkPanel > 25)
+        } finally { enhanced.recycle(); source.delete(); output.delete() }
+    }
+
+    @Test fun enhancedGrayPrintedContentAlsoSurvivesUnevenLighting() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = File.createTempFile("shaded-printed-panel-", ".jpg", context.cacheDir)
+        val bitmap = Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888)
+        for (y in 0 until 600) for (x in 0 until 800) {
+            val paper = 150 + x * 85 / 799
+            val factor = when { y in 100..500 && x in 80..350 -> .7f; y in 100..500 && x in 450..720 -> .45f; else -> 1f }
+            val value = (paper * factor).toInt()
+            bitmap.setPixel(x,y,Color.rgb(value,value,value))
+        }
+        source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }; bitmap.recycle()
+        val output = File(source.parentFile, source.name + "-result.jpg")
+        processor.writeResult(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, output, processingVersion = 2)
+        val result = processor.loadUpright(output, 1000)
+        try {
+            val paper = Color.red(result.getPixel(200,40))
+            val panel = Color.red(result.getPixel(200,300))
+            assertTrue("Printed panel was flattened under a gradient: paper=$paper panel=$panel", paper-panel > 40)
+        } finally { result.recycle(); source.delete(); output.delete() }
+    }
+
+    @Test fun enhancedDarkAndColoredBackgroundsAreNotBleached() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (color in listOf(Color.rgb(35, 35, 35), Color.rgb(35, 85, 150))) {
+            val source = File.createTempFile("non-paper-", ".jpg", context.cacheDir)
+            val bitmap = Bitmap.createBitmap(400, 300, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(color)
+            source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+            bitmap.recycle()
+            val result = processor.render(source, DocumentQuad.FULL_IMAGE, DocumentEffect.ENHANCED, 0, processingVersion = 2)
+            try { assertTrue(Color.red(result.getPixel(100, 100)) < 100) }
+            finally { result.recycle(); source.delete() }
+        }
+    }
+
     @Test fun highContrastDocumentDetectedAndBlankFrameFallsBack() {
         val pixels = ByteArray(400 * 300) { 20 }
         for (y in 30 until 270) for (x in 40 until 360) pixels[y * 400 + x] = 240.toByte()

@@ -136,7 +136,7 @@ class DocumentProcessor {
         } finally { bitmap.recycle(); rgba.release(); channel.release() }
     }
 
-    fun render(source: File, quad: DocumentQuad, effect: DocumentEffect, quarterTurns: Int, maxEdge: Int = 4096): Bitmap {
+    fun render(source: File, quad: DocumentQuad, effect: DocumentEffect, quarterTurns: Int, maxEdge: Int = 4096, processingVersion: Int = 1): Bitmap {
         requireOpenCv()
         require(quad.isValid) { "文档四角无效，请重新调整" }
         val bitmap = loadUpright(source, maxEdge)
@@ -158,6 +158,7 @@ class DocumentProcessor {
             transform = Imgproc.getPerspectiveTransform(from, to)
             Imgproc.warpPerspective(rgba, warped, transform, Size(width.toDouble(), height.toDouble()), Imgproc.INTER_LINEAR, Core.BORDER_REPLICATE)
             rgba.release()
+            if (effect == DocumentEffect.ENHANCED && processingVersion >= 2) PaperIlluminationEnhancer.apply(warped)
             applyEffect(warped, effect)
             val result = Bitmap.createBitmap(warped.cols(), warped.rows(), Bitmap.Config.ARGB_8888)
             Utils.matToBitmap(warped, result)
@@ -195,8 +196,8 @@ class DocumentProcessor {
         } finally { rgb.release(); ycc.release(); blur.release(); channels.forEach { it.release() } }
     }
 
-    fun writeResult(source: File, quad: DocumentQuad, effect: DocumentEffect, quarterTurns: Int, output: File) {
-        val bitmap = render(source, quad, effect, quarterTurns)
+    fun writeResult(source: File, quad: DocumentQuad, effect: DocumentEffect, quarterTurns: Int, output: File, processingVersion: Int = 1) {
+        val bitmap = render(source, quad, effect, quarterTurns, processingVersion = processingVersion)
         val part = File(output.parentFile, output.name + ".part")
         try {
             FileOutputStream(part).use {

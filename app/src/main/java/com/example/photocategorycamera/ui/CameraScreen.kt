@@ -137,6 +137,10 @@ internal fun CameraScreen(
     onGridEnabledChanged: (Boolean) -> Unit,
     videoStabilizationEnabled: Boolean,
     onVideoStabilizationEnabledChanged: (Boolean) -> Unit,
+    photoDateStampEnabled: Boolean = false,
+    photoDateStampFormat: com.example.photocategorycamera.domain.PhotoDateStampFormat = com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE,
+    onPhotoDateStampEnabledChanged: (Boolean) -> Unit = {},
+    onPhotoDateStampFormatChanged: (com.example.photocategorycamera.domain.PhotoDateStampFormat) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -447,6 +451,10 @@ internal fun CameraScreen(
                                 settingsMenu = false
                             },
                         )
+                        if (state.captureMode == CaptureMode.PHOTO) {
+                            PhotoDateStampSettings(photoDateStampEnabled, photoDateStampFormat,
+                                onPhotoDateStampEnabledChanged, onPhotoDateStampFormatChanged)
+                        }
                         if (state.captureMode == CaptureMode.DOCUMENT) {
                             DocumentEffect.entries.forEach { effect ->
                                 DropdownMenuItem(
@@ -745,12 +753,15 @@ internal fun CameraScreen(
                 verticalArrangement = Arrangement.Top,
             ) {
                 if (!state.video.isActive) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         CaptureMode.entries.forEach { mode ->
                             TextButton(onClick = { viewModel.setCaptureMode(mode) }, enabled = !state.controlsLocked) {
                                 Text(if (mode == CaptureMode.PHOTO) "照片" else "文档",
                                     color = if (state.captureMode == mode) Color(0xFFFFD34E) else Color.White.copy(alpha = 0.7f))
                             }
+                        }
+                        if (state.captureMode == CaptureMode.DOCUMENT) {
+                            DocumentEffectSelector(state.documentEffect, !state.controlsLocked, viewModel::setDocumentEffect)
                         }
                     }
                 }

@@ -9,9 +9,9 @@ import com.example.photocategorycamera.domain.CategoryGroup
 import com.example.photocategorycamera.domain.MediaKind
 
 enum class CaptureTaskStage {
-    CAPTURING, DOCUMENT_PROCESSING, DOCUMENT_RETRY, READY, SAVING, RETRY, FAILED;
+    CAPTURING, PHOTO_PROCESSING, PHOTO_RETRY, DOCUMENT_PROCESSING, DOCUMENT_RETRY, READY, SAVING, RETRY, FAILED;
 
-    val isRetryable: Boolean get() = this == RETRY || this == DOCUMENT_RETRY
+    val isRetryable: Boolean get() = this == RETRY || this == DOCUMENT_RETRY || this == PHOTO_RETRY
 }
 
 @Entity(
@@ -32,6 +32,8 @@ data class CaptureTaskEntity(
     val updatedAt: Long,
     @ColumnInfo(defaultValue = "'home'") val groupId: String = CategoryGroup.HOME_ID,
     @ColumnInfo(defaultValue = "NULL") val groupName: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val photoDateStampText: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val sourcePath: String? = null,
 ) {
     val kind: MediaKind get() = MediaKind.entries.firstOrNull { it.name == mediaKind } ?: MediaKind.PHOTO
     val taskStage: CaptureTaskStage get() = CaptureTaskStage.entries.firstOrNull { it.name == stage } ?: CaptureTaskStage.FAILED

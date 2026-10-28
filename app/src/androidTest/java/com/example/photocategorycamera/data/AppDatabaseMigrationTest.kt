@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,6 +34,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_5_6,
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
+                AppDatabase.MIGRATION_8_9,
             ).build()
         try {
             val cursor = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -70,6 +72,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_5_6,
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
+                AppDatabase.MIGRATION_8_9,
             ).build()
         try {
             val categories = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -98,7 +101,7 @@ class AppDatabaseMigrationTest {
             close()
         }
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             database.openHelper.readableDatabase.query("SELECT mediaKind, tempPath, rootTreeUri, targetUri, stage FROM capture_tasks WHERE id = 'legacy'").use {
                 assertEquals(true, it.moveToFirst())
@@ -131,7 +134,7 @@ class AppDatabaseMigrationTest {
             close()
         }
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             val db = database.openHelper.writableDatabase
             db.query("SELECT name, sortOrder, isActive, createdAt, groupId FROM categories WHERE id='one'").use {
@@ -169,6 +172,7 @@ class AppDatabaseMigrationTest {
         val initial = Room.databaseBuilder(context, AppDatabase::class.java, name).build()
         initial.openHelper.writableDatabase.apply {
             createLegacyDirectoryOperations(this)
+            createLegacyMediaTables(this)
             execSQL("DROP TABLE categories")
             execSQL("CREATE TABLE categories (id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE, sortOrder INTEGER NOT NULL, isActive INTEGER NOT NULL, createdAt INTEGER NOT NULL, groupId TEXT NOT NULL DEFAULT 'home')")
             execSQL("CREATE UNIQUE INDEX index_categories_groupId_name ON categories (groupId,name)")
@@ -180,7 +184,7 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+            .addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             val db = migrated.openHelper.writableDatabase
             db.query("SELECT name FROM category_groups WHERE id='home'").use {
@@ -207,6 +211,7 @@ class AppDatabaseMigrationTest {
         val initial = Room.databaseBuilder(context, AppDatabase::class.java, name).build()
         initial.openHelper.writableDatabase.apply {
             createLegacyDirectoryOperations(this)
+            createLegacyMediaTables(this)
             execSQL("INSERT INTO category_groups VALUES ('home','常用',-1,0),('trip','旅行',2,3)")
             execSQL("INSERT INTO categories VALUES ('cat','笔记',7,0,123,'home',1)")
             execSQL("INSERT INTO directory_operations VALUES ('native','TRANSFER_CATEGORY','cat','home','trip','content://root',NULL,'旅行','笔记','笔记','journal:native','FILESYSTEM_DONE',NULL,11,12,1)")
@@ -215,10 +220,10 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_7_8).build()
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             val db = migrated.openHelper.writableDatabase
-            db.query("PRAGMA user_version").use { assertEquals(true, it.moveToFirst()); assertEquals(8, it.getInt(0)) }
+            db.query("PRAGMA user_version").use { assertEquals(true, it.moveToFirst()); assertEquals(9, it.getInt(0)) }
             db.query("SELECT id,kind,categoryId,sourceGroupId,targetGroupId,rootTreeUri,sourceGroupName,targetGroupName,sourceName,targetName,stateJson,stage,error,createdAt,updatedAt,slot,targetBeforeCategoryId FROM directory_operations ORDER BY id DESC").use {
                 assertEquals(true, it.moveToFirst())
                 assertEquals(listOf("native", "TRANSFER_CATEGORY", "cat", "home", "trip", "content://root", null, "旅行", "笔记", "笔记", "journal:native", "FILESYSTEM_DONE", null, "11", "12", "1", null),
@@ -237,6 +242,40 @@ class AppDatabaseMigrationTest {
                 assertEquals(true, it.moveToFirst()); assertEquals(true, it.isNull(0))
             }
         } finally { migrated.close() }
+    }
+
+    @Test fun migrate8To9PreservesPendingTargetsAndDefaultsOldRecipesToVersionOne() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(name)
+        val initial = Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+        initial.openHelper.writableDatabase.apply {
+            createLegacyMediaTables(this)
+            execSQL("INSERT INTO capture_tasks (id,tempPath,categoryId,categoryName,rootTreeUri,mediaKind,stage,targetUri,createdAt,updatedAt) VALUES ('old-photo','source.jpg','cat','笔记','content://root','PHOTO','RETRY','content://frozen-target',11,12)")
+            execSQL("INSERT INTO document_drafts (id,sourcePath,categoryId,categoryName,rootTreeUri,quadValue,effectValue,quarterTurns,stage,createdAt) VALUES ('old-document','original.jpg','cat','笔记','content://root','','ENHANCED',0,'EDITING',13)")
+            execSQL("PRAGMA user_version = 8")
+        }
+        initial.close()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9).build()
+        try {
+            migrated.openHelper.readableDatabase.query("SELECT tempPath,targetUri,photoDateStampText,sourcePath,stage FROM capture_tasks").use {
+                assertTrue(it.moveToFirst()); assertEquals("source.jpg", it.getString(0)); assertEquals("content://frozen-target", it.getString(1))
+                assertTrue(it.isNull(2)); assertTrue(it.isNull(3)); assertEquals("RETRY", it.getString(4))
+            }
+            migrated.openHelper.readableDatabase.query("SELECT sourcePath,effectValue,processingVersion,stage FROM document_drafts").use {
+                assertTrue(it.moveToFirst()); assertEquals("original.jpg", it.getString(0)); assertEquals("ENHANCED", it.getString(1))
+                assertEquals(1, it.getInt(2)); assertEquals("EDITING", it.getString(3))
+            }
+        } finally { migrated.close() }
+    }
+
+    private fun createLegacyMediaTables(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("DROP TABLE capture_tasks")
+        db.execSQL("CREATE TABLE capture_tasks (id TEXT NOT NULL PRIMARY KEY,tempPath TEXT NOT NULL,categoryId TEXT NOT NULL,categoryName TEXT NOT NULL,rootTreeUri TEXT NOT NULL,mediaKind TEXT NOT NULL,stage TEXT NOT NULL,targetUri TEXT,error TEXT,createdAt INTEGER NOT NULL,updatedAt INTEGER NOT NULL,groupId TEXT NOT NULL DEFAULT 'home',groupName TEXT DEFAULT NULL)")
+        db.execSQL("CREATE INDEX index_capture_tasks_stage ON capture_tasks(stage)")
+        db.execSQL("CREATE INDEX index_capture_tasks_createdAt ON capture_tasks(createdAt)")
+        db.execSQL("DROP TABLE document_drafts")
+        db.execSQL("CREATE TABLE document_drafts (id TEXT NOT NULL PRIMARY KEY,sourcePath TEXT NOT NULL,categoryId TEXT NOT NULL,categoryName TEXT NOT NULL,rootTreeUri TEXT NOT NULL,quadValue TEXT NOT NULL,effectValue TEXT NOT NULL,quarterTurns INTEGER NOT NULL,stage TEXT NOT NULL,editingSlot INTEGER,replacementPath TEXT,createdAt INTEGER NOT NULL,groupId TEXT NOT NULL DEFAULT 'home',groupName TEXT DEFAULT NULL)")
+        db.execSQL("CREATE UNIQUE INDEX index_document_drafts_editingSlot ON document_drafts(editingSlot)")
     }
 
     private fun createLegacyDirectoryOperations(db: androidx.sqlite.db.SupportSQLiteDatabase) {

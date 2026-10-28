@@ -15,6 +15,7 @@ import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasText
@@ -55,7 +56,9 @@ class DocumentCameraUiDeviceTest {
 
     @Test fun documentsPhotoAndAudioVideoSaveInCustomGroup() = captureInGroup(true)
 
-    private fun captureInGroup(custom: Boolean) {
+    @Test fun stampedPhotosAndEnhancedDocumentsSaveWithVisibleOptions() = captureInGroup(false, true)
+
+    private fun captureInGroup(custom: Boolean, verifyNewOptions: Boolean = false) {
         assumeTrue("Actual capture requires explicit opt-in", InstrumentationRegistry.getArguments().getString("allowDeviceCapture") == "true")
         assumeTrue(app.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
         assumeTrue(app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
@@ -71,7 +74,12 @@ class DocumentCameraUiDeviceTest {
             require(previousParent?.findFile(previousName)?.isDirectory == true)
             runBlocking { container.directoryOperations.deleteCategory(previous, true).getOrThrow() }
         }
-        val selectedBefore = runBlocking { container.settings.settings.first().selectedGroupId }
+        val settingsBefore = runBlocking { container.settings.settings.first() }
+        val selectedBefore = settingsBefore.selectedGroupId
+        if (verifyNewOptions) runBlocking {
+            container.settings.setPhotoDateStampEnabled(true)
+            container.settings.setPhotoDateStampFormat(com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE)
+        }
         val group = if (custom) runBlocking {
             container.directoryOperations.createGroup("分组回归_${UUID.randomUUID().toString().take(8)}").getOrThrow()
         } else null
@@ -91,6 +99,11 @@ class DocumentCameraUiDeviceTest {
         waitCamera()
         compose.onNodeWithText("文档").performClick()
         waitCamera(document = true)
+        if (verifyNewOptions) {
+            compose.onNodeWithText("效果：原色").performClick()
+            compose.onNodeWithText("增强").performClick()
+            compose.onNodeWithText("效果：增强").assertIsDisplayed()
+        }
         SystemClock.sleep(2_000)
         compose.onNodeWithContentDescription("拍摄文档").performClick()
         waitCamera(document = true)
@@ -115,11 +128,32 @@ class DocumentCameraUiDeviceTest {
         SystemClock.sleep(1_000)
         compose.onNodeWithContentDescription("拍照，长按录像").performClick()
         waitSaved(directory, 3)
+        if (verifyNewOptions) {
+            runBlocking { container.settings.setPhotoDateStampFormat(com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE_TIME) }
+            compose.onNodeWithContentDescription("拍照，长按录像").performClick()
+            waitSaved(directory, 4)
+            val photos = directory.listFiles().filter { it.type == "image/jpeg" }.sortedBy { it.name }
+            val sizes = photos.drop(2).map { photo ->
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                app.contentResolver.openInputStream(photo.uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
+                bounds.outWidth to bounds.outHeight
+            }
+            assertEquals(2, sizes.size)
+            assertEquals(sizes[0], sizes[1])
+            assertTrue(maxOf(sizes[0].first, sizes[0].second) >= 1920)
+            if (InstrumentationRegistry.getArguments().getString("exportReviewSamples") == "true") {
+                val review = java.io.File(app.filesDir,"v09-review").apply { mkdirs() }
+                listOf(0 to "camera-document-enhanced.jpg", 2 to "camera-photo-date.jpg", 3 to "camera-photo-date-time.jpg").forEach { (index, label) ->
+                    app.contentResolver.openInputStream(photos[index].uri)!!.use { input -> java.io.File(review,label).outputStream().use(input::copyTo) }
+                }
+            }
+        }
+        val expectedFiles = if (verifyNewOptions) 5 else 4
         compose.onNodeWithContentDescription("拍照，长按录像").performSemanticsAction(SemanticsActions.OnLongClick) { it() }
         compose.waitUntil(20_000) { compose.onAllNodesWithContentDescription("停止录像").fetchSemanticsNodes().isNotEmpty() }
         SystemClock.sleep(3_000)
         compose.onNodeWithContentDescription("停止录像").performClick()
-        waitSaved(directory, 4)
+        waitSaved(directory, expectedFiles)
         val video = directory.listFiles().single { it.type == "video/mp4" }
         MediaMetadataRetriever().use { retriever ->
             retriever.setDataSource(app, video.uri)
@@ -128,11 +162,17 @@ class DocumentCameraUiDeviceTest {
             assertTrue(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() >= 2_000)
             assertNotNull(retriever.getFrameAtTime(1_000_000)?.also { it.recycle() })
         }
-        assertEquals(4, runBlocking { container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), listOf(name), parentName).getOrThrow()[name] })
+        assertEquals(expectedFiles, runBlocking { container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), listOf(name), parentName).getOrThrow()[name] })
         runBlocking {
             container.directoryOperations.deleteCategory(category, true).getOrThrow()
             if (group != null) container.directoryOperations.deleteGroup(group).getOrThrow()
         }
-        } finally { runBlocking { container.settings.setSelectedGroupId(selectedBefore) } }
+        } finally { runBlocking {
+            container.settings.setSelectedGroupId(selectedBefore)
+            if (verifyNewOptions) {
+                container.settings.setPhotoDateStampEnabled(settingsBefore.photoDateStampEnabled)
+                container.settings.setPhotoDateStampFormat(settingsBefore.photoDateStampFormat)
+            }
+        } }
     }
 }

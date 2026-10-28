@@ -30,6 +30,7 @@ data class DocumentDraftEntity(
     val createdAt: Long,
     @ColumnInfo(defaultValue = "'home'") val groupId: String = CategoryGroup.HOME_ID,
     @ColumnInfo(defaultValue = "NULL") val groupName: String? = null,
+    @ColumnInfo(defaultValue = "1") val processingVersion: Int = 1,
 ) {
     val quad: DocumentQuad get() = DocumentQuad.decode(quadValue) ?: DocumentQuad.FULL_IMAGE
     val effect: DocumentEffect get() = DocumentEffect.entries.firstOrNull { it.name == effectValue } ?: DocumentEffect.ORIGINAL

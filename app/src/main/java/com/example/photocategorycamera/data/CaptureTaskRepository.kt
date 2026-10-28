@@ -23,6 +23,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
+import java.time.ZoneId
+import com.example.photocategorycamera.domain.PhotoDateStamp
+import com.example.photocategorycamera.photo.PhotoStampWriter
+import com.example.photocategorycamera.photo.PhotoDateStampProcessor
+import com.example.photocategorycamera.photo.ImageProcessingGate
 
 data class CaptureReservation(val id: String, val tempFile: File, val category: Category)
 
@@ -32,6 +37,9 @@ class CaptureTaskRepository(
     private val settings: SettingsRepository,
     private val storage: MediaStorage,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val photoStamper: PhotoStampWriter = PhotoDateStampProcessor(),
+    private val captureTimeMillis: () -> Long = System::currentTimeMillis,
+    private val captureZone: () -> ZoneId = ZoneId::systemDefault,
 ) {
     private val dao = database.captureTaskDao()
     private val documentDao = database.documentDraftDao()
@@ -103,10 +111,13 @@ class CaptureTaskRepository(
     ): Result<CaptureReservation> = runCatching {
         initialization.await()
         reservationMutex.withLock { database.withTransaction {
-            check(settings.settings.first().storageRoot?.treeUri == root.treeUri) { "保存根目录已变化，请重新进入相机" }
+            val snapshot = settings.settings.first()
+            check(snapshot.storageRoot?.treeUri == root.treeUri) { "保存根目录已变化，请重新进入相机" }
             val latest = database.latestCaptureCategory(category.id)
             check(dao.countOutstanding() < MAX_OUTSTANDING) { "待处理任务已满，请等待保存完成" }
-            val now = System.currentTimeMillis()
+            val now = captureTimeMillis()
+            val stamp = if (kind == MediaKind.PHOTO && snapshot.photoDateStampEnabled)
+                PhotoDateStamp.format(now, captureZone(), snapshot.photoDateStampFormat) else null
             val id = UUID.randomUUID().toString()
             val file = createTempFile()
             val inserted = dao.insert(
@@ -122,6 +133,8 @@ class CaptureTaskRepository(
                     updatedAt = now,
                     groupId = latest.groupId,
                     groupName = latest.groupName,
+                    photoDateStampText = stamp,
+                    sourcePath = if (stamp != null) file.absolutePath else null,
                 ),
             )
             check(inserted != -1L) { "无法建立拍摄任务" }
@@ -138,7 +151,10 @@ class CaptureTaskRepository(
     fun markReady(id: String, kind: MediaKind) {
         scope.launch {
             initialization.await()
-            dao.markReady(id, kind.name, now = System.currentTimeMillis())
+            val task = dao.find(id) ?: return@launch
+            if (task.kind != kind) return@launch
+            dao.completeCapture(id, if (task.photoDateStampText != null) CaptureTaskStage.PHOTO_PROCESSING.name
+                else CaptureTaskStage.READY.name, System.currentTimeMillis())
             CaptureEventLog.record(context, "task_ready", id, values = mapOf("mediaKind" to kind.name))
             processReady()
         }
@@ -164,6 +180,9 @@ class CaptureTaskRepository(
         val failed = dao.failed()
         failed.forEach { task ->
             File(task.tempPath).delete()
+            task.sourcePath?.let { File(it).delete() }
+            stampedOutput(task.id).delete()
+            File(stampedOutput(task.id).path + ".part").delete()
             dao.delete(task.id)
             clearDocumentMaterials(task.id)
             CaptureEventLog.record(context, "failed_task_discarded", task.id)
@@ -187,7 +206,12 @@ class CaptureTaskRepository(
 
     private suspend fun processReady() = savingMutex.withLock {
         while (true) {
-            var task = dao.nextSavable() ?: break
+            var task = dao.nextSavable()
+            if (task == null) {
+                val photo = dao.nextPhotoProcessing() ?: break
+                processPhoto(photo)
+                continue
+            }
             val now = System.currentTimeMillis()
             if (task.targetUri == null) {
                 val target = storage.reserveTarget(Uri.parse(task.rootTreeUri), task.category(), task.kind)
@@ -216,6 +240,7 @@ class CaptureTaskRepository(
                     )
                     dao.delete(task.id)
                     File(task.tempPath).delete()
+                    task.sourcePath?.let { File(it).delete() }
                     clearDocumentMaterials(task.id)
                 }
                 CaptureStatus.RETRY_AVAILABLE -> dao.updateProgress(
@@ -237,6 +262,33 @@ class CaptureTaskRepository(
                     values = mapOf("status" to result.status.name, "error" to result.error),
                 )
             }
+        }
+    }
+
+    private fun stampedOutput(id: String): File = File(
+        File(context.filesDir, "capture-recovery").apply { mkdirs() }, id + "_stamped.jpg",
+    )
+
+    private suspend fun processPhoto(task: CaptureTaskEntity) {
+        try {
+            ImageProcessingGate.mutex.withLock {
+                val source = File(checkNotNull(task.sourcePath) { "水印原图路径缺失" })
+                val text = checkNotNull(task.photoDateStampText) { "拍摄日期缺失" }
+                val output = stampedOutput(task.id)
+                photoStamper.writeResult(source, text, output)
+                dao.markPhotoProcessed(task.id, output.absolutePath, System.currentTimeMillis())
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: com.example.photocategorycamera.photo.InvalidPhotoSourceException) {
+            dao.updateProgress(task.id, CaptureTaskStage.FAILED.name, null,
+                "照片原图不完整或无法读取，材料已保留，可清除失败记录：" + error.message, System.currentTimeMillis())
+        } catch (error: OutOfMemoryError) {
+            dao.updateProgress(task.id, CaptureTaskStage.PHOTO_RETRY.name, null,
+                "水印处理内存不足，原图已保留，请稍后重试", System.currentTimeMillis())
+        } catch (error: Exception) {
+            dao.updateProgress(task.id, CaptureTaskStage.PHOTO_RETRY.name, null,
+                "水印处理失败，原图已保留：" + (error.message ?: "可重试"), System.currentTimeMillis())
         }
     }
 
@@ -265,7 +317,8 @@ class CaptureTaskRepository(
                     MediaKind.PHOTO -> if (isRecoverableJpeg(file)) MediaKind.PHOTO else null
                 }
                 if (recoveredKind != null) {
-                    dao.markReady(task.id, recoveredKind.name, now = System.currentTimeMillis())
+                    dao.completeCapture(task.id, if (task.photoDateStampText != null)
+                        CaptureTaskStage.PHOTO_PROCESSING.name else CaptureTaskStage.READY.name, System.currentTimeMillis())
                     CaptureEventLog.record(
                         context,
                         "task_recovered",

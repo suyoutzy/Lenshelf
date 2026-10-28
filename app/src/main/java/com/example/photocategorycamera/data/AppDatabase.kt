@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [CategoryEntity::class, CategoryGroupEntity::class, CaptureTaskEntity::class, DocumentDraftEntity::class, DirectoryOperationEntity::class],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -18,6 +18,14 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun documentDraftDao(): DocumentDraftDao
 
     companion object {
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN photoDateStampText TEXT DEFAULT NULL")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN sourcePath TEXT DEFAULT NULL")
+                database.execSQL("ALTER TABLE document_drafts ADD COLUMN processingVersion INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE directory_operations ADD COLUMN targetBeforeCategoryId TEXT DEFAULT NULL")

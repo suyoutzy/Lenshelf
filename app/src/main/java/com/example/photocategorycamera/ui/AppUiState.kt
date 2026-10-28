@@ -10,6 +10,7 @@ import com.example.photocategorycamera.data.DocumentDraftEntity
 import com.example.photocategorycamera.data.blocksCategory
 import com.example.photocategorycamera.data.blocksGroup
 import com.example.photocategorycamera.domain.FolderOpenMode
+import com.example.photocategorycamera.domain.PhotoDateStampFormat
 import com.example.photocategorycamera.domain.StorageRoot
 
 data class AppUiState(
@@ -37,6 +38,8 @@ data class AppUiState(
     val canRetryCapture: Boolean = false,
     val folderOpenMode: FolderOpenMode = FolderOpenMode.SYSTEM,
     val cameraGridEnabled: Boolean = false,
+    val photoDateStampEnabled: Boolean = false,
+    val photoDateStampFormat: PhotoDateStampFormat = PhotoDateStampFormat.DATE,
     val videoStabilizationEnabled: Boolean = true,
     val busy: Boolean = false,
     val message: String? = null,
@@ -147,6 +150,8 @@ internal object AppUiStateMapper {
             canRetryCapture = settings.pendingCapture != null || retryTask != null,
             folderOpenMode = settings.folderOpenMode,
             cameraGridEnabled = settings.cameraGridEnabled,
+            photoDateStampEnabled = settings.photoDateStampEnabled,
+            photoDateStampFormat = settings.photoDateStampFormat,
             videoStabilizationEnabled = settings.videoStabilizationEnabled,
             busy = busy,
             message = message,

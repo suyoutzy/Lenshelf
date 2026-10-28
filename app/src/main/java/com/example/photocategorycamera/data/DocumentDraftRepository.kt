@@ -37,7 +37,7 @@ class DocumentDraftRepository(
     private val tasks = database.captureTaskDao()
     private val directory = File(context.filesDir, "document-drafts").apply { mkdirs() }
     // Serialize large bitmap/native operations, while CameraX can accept the next source.
-    private val processingMutex = Mutex()
+    private val processingMutex = com.example.photocategorycamera.photo.ImageProcessingGate.mutex
     val editable = dao.observeEditable()
     private val initialization = scope.async { recoverInterrupted() }
 
@@ -52,7 +52,7 @@ class DocumentDraftRepository(
                         id, source.absolutePath, category.id, category.name, root.treeUri,
                         effectValue = effect.name, stage = "AUTO_CAPTURING", editingSlot = null,
                         createdAt = System.currentTimeMillis(),
-                        groupId = category.groupId, groupName = category.groupName,
+                        groupId = category.groupId, groupName = category.groupName, processingVersion = 2,
                     )).getOrThrow()
                     DocumentReservation(id, source)
                 } catch (error: Exception) { source.delete(); throw error }
@@ -115,7 +115,7 @@ class DocumentDraftRepository(
                 tasks.updateProgress(id, CaptureTaskStage.DOCUMENT_PROCESSING.name, null, null, System.currentTimeMillis())
             }
             val output = File(directory, id + "_processed.jpg")
-            processor.writeResult(source, draft.quad, draft.effect, draft.quarterTurns, output)
+            processor.writeResult(source, draft.quad, draft.effect, draft.quarterTurns, output, draft.processingVersion)
             // Read display copies before the saving queue can clean up files.
             // A preview failure must never block saving a valid output.
             if (withPreview) preview = runCatching { processor.capturePreview(id, source, output, draft.quad) }.getOrNull()
@@ -147,7 +147,7 @@ class DocumentDraftRepository(
                 if (draft.stage == "QUEUED") return@runCatching
                 check(draft.stage == "EDITING" && draft.replacementPath == null) { "请等待旧版文档恢复完成" }
                 val output = File(directory, id + "_processed.jpg")
-                processor.writeResult(File(draft.sourcePath), draft.quad, draft.effect, draft.quarterTurns, output)
+                processor.writeResult(File(draft.sourcePath), draft.quad, draft.effect, draft.quarterTurns, output, draft.processingVersion)
                 captureTasks.enqueueDocument(id, output).getOrThrow()
             }
         }

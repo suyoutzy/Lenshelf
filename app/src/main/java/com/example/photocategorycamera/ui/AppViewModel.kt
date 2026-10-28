@@ -233,6 +233,14 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch { container.initialization.await(); container.settings.setFolderOpenMode(mode) }
     }
 
+    fun setPhotoDateStampEnabled(enabled: Boolean) {
+        viewModelScope.launch { container.initialization.await(); container.settings.setPhotoDateStampEnabled(enabled) }
+    }
+
+    fun setPhotoDateStampFormat(format: com.example.photocategorycamera.domain.PhotoDateStampFormat) {
+        viewModelScope.launch { container.initialization.await(); container.settings.setPhotoDateStampFormat(format) }
+    }
+
     fun setCameraGridEnabled(enabled: Boolean) {
         viewModelScope.launch { container.initialization.await(); container.settings.setCameraGridEnabled(enabled) }
     }

@@ -23,6 +23,15 @@ interface CaptureTaskDao {
     @Query("SELECT * FROM capture_tasks WHERE stage IN ('READY', 'SAVING') ORDER BY createdAt ASC LIMIT 1")
     suspend fun nextSavable(): CaptureTaskEntity?
 
+    @Query("SELECT * FROM capture_tasks WHERE stage = 'PHOTO_PROCESSING' ORDER BY createdAt ASC LIMIT 1")
+    suspend fun nextPhotoProcessing(): CaptureTaskEntity?
+
+    @Query("UPDATE capture_tasks SET stage = :stage, error = NULL, updatedAt = :now WHERE id = :id AND stage = 'CAPTURING'")
+    suspend fun completeCapture(id: String, stage: String, now: Long): Int
+
+    @Query("UPDATE capture_tasks SET tempPath = :path, stage = 'READY', error = NULL, updatedAt = :now WHERE id = :id AND stage = 'PHOTO_PROCESSING'")
+    suspend fun markPhotoProcessed(id: String, path: String, now: Long)
+
     @Query("SELECT * FROM capture_tasks WHERE stage = 'RETRY' ORDER BY createdAt ASC")
     suspend fun retryable(): List<CaptureTaskEntity>
 
@@ -41,7 +50,7 @@ interface CaptureTaskDao {
     @Query("UPDATE capture_tasks SET stage = :stage, targetUri = :targetUri, error = :error, updatedAt = :now WHERE id = :id")
     suspend fun updateProgress(id: String, stage: String, targetUri: String?, error: String?, now: Long)
 
-    @Query("UPDATE capture_tasks SET stage = 'READY', error = NULL, updatedAt = :now WHERE stage = 'RETRY'")
+    @Query("UPDATE capture_tasks SET stage = CASE WHEN stage = 'PHOTO_RETRY' THEN 'PHOTO_PROCESSING' ELSE 'READY' END, error = NULL, updatedAt = :now WHERE stage IN ('RETRY', 'PHOTO_RETRY')")
     suspend fun retryAll(now: Long)
 
     @Query("DELETE FROM capture_tasks WHERE id = :id")

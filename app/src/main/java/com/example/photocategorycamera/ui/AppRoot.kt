@@ -187,6 +187,10 @@ fun AppRoot(
                                     }
                                 }
                             },
+                            photoDateStampEnabled = state.photoDateStampEnabled,
+                            photoDateStampFormat = state.photoDateStampFormat,
+                            onPhotoDateStampEnabledChanged = appViewModel::setPhotoDateStampEnabled,
+                            onPhotoDateStampFormatChanged = appViewModel::setPhotoDateStampFormat,
                             gridEnabled = state.cameraGridEnabled,
                             onGridEnabledChanged = appViewModel::setCameraGridEnabled,
                             videoStabilizationEnabled = state.videoStabilizationEnabled,
