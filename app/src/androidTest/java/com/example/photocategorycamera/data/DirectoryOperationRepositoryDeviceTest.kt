@@ -66,13 +66,179 @@ class DirectoryOperationRepositoryDeviceTest {
         }
     }
 
+    @Test fun refreshSynchronizesOnlyCurrentGroupPreservingIdsAndDeferredMaterials() = fixture { f ->
+        val ops = f.coordinator()
+        val group = ops.createGroup("other").getOrThrow()
+        val outside = ops.createCategory("outside", group.id).getOrThrow()
+        val keep = ops.createCategory("keep", "home").getOrThrow()
+        val gone = ops.createCategory("gone", "home").getOrThrow()
+        val protected = ops.createCategory("pending", "home").getOrThrow()
+        f.db.captureTaskDao().insert(CaptureTaskEntity("frozen", "photo.jpg", protected.id, protected.name,
+            f.root.treeUri, "PHOTO", "FAILED", createdAt = 1, updatedAt = 1))
+        File(f.rootFile, "常用/gone").delete()
+        File(f.rootFile, "常用/pending").delete()
+        File(f.rootFile, "常用/zebra").mkdir()
+        File(f.rootFile, "常用/Alpha").mkdir()
+        File(f.rootFile, "常用/.hidden").mkdir()
+        val result = ops.refreshCategories("home").getOrThrow()
+        assertEquals(listOf("Alpha", "zebra"), result.addedNames)
+        assertEquals(listOf("gone"), result.removedNames)
+        assertEquals(listOf("pending"), result.deferredNames)
+        assertEquals(1, result.retainedCount)
+        assertEquals(1, result.ignoredCount)
+        assertEquals(keep, f.categories.findById(keep.id))
+        assertNull(f.categories.findById(gone.id))
+        assertEquals(protected, f.categories.findById(protected.id))
+        assertEquals(outside, f.categories.findById(outside.id))
+        assertEquals(listOf("keep", "pending", "Alpha", "zebra"), f.categories.getAll("home").map { it.name })
+        assertTrue(File(f.rootFile, "常用/.hidden").isDirectory)
+        f.db.captureTaskDao().delete("frozen")
+        assertEquals(listOf("pending"), ops.refreshCategories("home").getOrThrow().removedNames)
+        assertEquals(emptyList<String>(), ops.refreshCategories("home").getOrThrow().addedNames)
+    }
+
+    @Test fun refreshUsesExactExternalPathsAndNeverImportsTrimmedOrAmbiguousNames() = fixture { f ->
+        val ops = f.coordinator()
+        val original = ops.createCategory("Receipts", "home").getOrThrow()
+        val source = File(f.rootFile, "常用/Receipts")
+        File(source, "photo.jpg").writeText("original bytes")
+        val renamed = File(f.rootFile, "常用/receipts")
+        assertTrue(source.renameTo(renamed))
+        File(f.rootFile, "常用/  Padded  ").mkdir()
+        val result = ops.refreshCategories("home").getOrThrow()
+        assertEquals(listOf("Receipts"), result.removedNames)
+        assertEquals(listOf("receipts"), result.addedNames)
+        assertEquals(1, result.ignoredCount)
+        assertNull(f.categories.findById(original.id))
+        val imported = f.categories.getAll("home").single()
+        assertEquals("receipts", imported.name)
+        assertEquals("original bytes", File(renamed, "photo.jpg").readText())
+        assertEquals(imported, f.categories.findById(imported.id))
+        assertTrue(ops.refreshCategories("home").getOrThrow().removedNames.isEmpty())
+        assertFalse(File(f.rootFile, "常用/Padded").exists())
+        assertTrue(source.mkdir())
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertEquals(listOf(imported), f.categories.getAll("home"))
+        assertTrue(source.delete())
+        ops.deleteCategory(imported).getOrThrow()
+        assertFalse(renamed.exists())
+    }
+
+    @Test fun refreshAbortsOnReadFailureOrChangedRootGroupAndCategorySnapshot() = fixture { f ->
+        val ops = f.coordinator()
+        val category = ops.createCategory("keep", "home").getOrThrow()
+        File(f.rootFile, "常用/keep").delete()
+        f.storage.listingFailure = java.io.IOException("Provider still loading")
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertEquals(category, f.categories.findById(category.id))
+        f.storage.listingFailure = null
+        f.storage.beforeList = { f.db.categoryDao().setName(category.id, "changed") }
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertNotNull(f.categories.findById(category.id))
+        f.storage.beforeList = { f.settings.setStorageRoot(f.root.copy(treeUri = "file:///other")) }
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertNotNull(f.categories.findById(category.id))
+    }
+
+    @Test fun refreshDoesNotRemoveMissingDraftOrLegacyPendingCategoriesAndNoAccessNeverPrunes() = fixture { f ->
+        val ops = f.coordinator()
+        val draft = ops.createCategory("draft", "home").getOrThrow()
+        val pending = ops.createCategory("legacy", "home").getOrThrow()
+        f.db.documentDraftDao().insert(DocumentDraftEntity("draft", "source.jpg", draft.id, draft.name,
+            f.root.treeUri, "", "ORIGINAL", 0, "EDITING", 1, null, 1))
+        f.settings.setPendingCapture(PendingMedia("legacy.jpg", pending.id, pending.name))
+        File(f.rootFile, "常用/draft").delete()
+        File(f.rootFile, "常用/legacy").delete()
+        assertEquals(setOf("draft", "legacy"), ops.refreshCategories("home").getOrThrow().deferredNames.toSet())
+        f.storage.access = false
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertEquals(2, f.categories.getAll("home").size)
+    }
+
+    @Test fun deleteAlwaysRemovesAllOwnedContentAndFailureRetainsTheRecord() = fixture { f ->
+        val ops = f.coordinator()
+        val category = ops.createCategory("delete", "home").getOrThrow()
+        val folder = File(f.rootFile, "常用/delete")
+        File(folder, "nested").mkdir()
+        File(folder, "nested/other.bin").writeBytes(byteArrayOf(1, 2, 3))
+        File(folder, ".hidden").writeText("owned")
+        f.storage.failDelete = true
+        assertTrue(ops.deleteCategory(category).isFailure)
+        assertEquals(category, f.categories.findById(category.id))
+        assertTrue(folder.exists())
+        f.storage.failDelete = false
+        ops.deleteCategory(category).getOrThrow()
+        assertFalse(folder.exists())
+        assertNull(f.categories.findById(category.id))
+        val missing = ops.createCategory("missing", "home").getOrThrow()
+        File(f.rootFile, "常用/missing").delete()
+        ops.deleteCategory(missing).getOrThrow()
+        assertNull(f.categories.findById(missing.id))
+    }
+
+    @Test fun refreshRollsBackRemovedRecordsWhenCreatingANewRecordFails() = fixture { f ->
+        val ops = f.coordinator()
+        val gone = ops.createCategory("gone", "home").getOrThrow()
+        File(f.rootFile,"常用/gone").delete()
+        File(f.rootFile,"常用/new").mkdir()
+        f.db.openHelper.writableDatabase.execSQL("""CREATE TRIGGER reject_refresh_insert BEFORE INSERT ON categories
+            WHEN NEW.name='new' BEGIN SELECT RAISE(ABORT,'injected refresh insert failure'); END""")
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertEquals(gone,f.categories.findById(gone.id))
+        assertEquals(1,f.categories.getAll("home").size)
+        f.db.openHelper.writableDatabase.execSQL("DROP TRIGGER reject_refresh_insert")
+        val refreshed=ops.refreshCategories("home").getOrThrow()
+        assertEquals(listOf("gone"),refreshed.removedNames)
+        assertEquals(listOf("new"),refreshed.addedNames)
+    }
+
+    @Test fun refreshRejectsChangedGroupAndBothSidesOfAnUnfinishedTransfer() = fixture { f ->
+        val reached=CompletableDeferred<Unit>();val proceed=CompletableDeferred<Unit>()
+        val ops=f.coordinator { reached.complete(Unit);proceed.await() }
+        val group=ops.createGroup("target").getOrThrow()
+        val category=ops.createCategory("source","home").getOrThrow()
+        f.storage.beforeList={f.db.categoryGroupDao().setName(group.id,"changed")}
+        assertTrue(ops.refreshCategories(group.id).isFailure)
+        f.db.categoryGroupDao().setName(group.id,group.name)
+        f.storage.beforeList={}
+        ops.transferCategory(category,group.id).getOrThrow()
+        reached.await()
+        val before=f.categories.getAll()
+        assertTrue(ops.refreshCategories("home").isFailure)
+        assertTrue(ops.refreshCategories(group.id).isFailure)
+        assertEquals(before,f.categories.getAll())
+        val operation=f.awaitReserved()
+        proceed.complete(Unit);f.awaitFinished(operation.id)
+    }
+
+    @Test fun wholeDirectoryDeletionRejectsOutstandingFailedMediaDraftsAndLegacyPending() = fixture { f ->
+        val ops=f.coordinator()
+        val category=ops.createCategory("protected","home").getOrThrow()
+        val file=File(f.rootFile,"常用/protected/photo.jpg").apply { writeText("owned") }
+        f.db.captureTaskDao().insert(CaptureTaskEntity("task","source.jpg",category.id,category.name,
+            f.root.treeUri,"PHOTO","FAILED",createdAt=1,updatedAt=1))
+        assertTrue(ops.deleteCategory(category).isFailure)
+        f.db.captureTaskDao().delete("task")
+        f.db.documentDraftDao().insert(DocumentDraftEntity("draft","source.jpg",category.id,category.name,
+            f.root.treeUri,"","ORIGINAL",0,"EDITING",1,null,1))
+        assertTrue(ops.deleteCategory(category).isFailure)
+        f.db.documentDraftDao().delete("draft")
+        f.settings.setPendingCapture(PendingMedia("source.jpg",category.id,category.name))
+        assertTrue(ops.deleteCategory(category).isFailure)
+        assertEquals("owned",file.readText())
+        assertEquals(category,f.categories.findById(category.id))
+        f.settings.clearPendingCapture()
+        ops.deleteCategory(category).getOrThrow()
+        assertFalse(file.exists())
+    }
+
     @Test fun bulkReorderRejectsStaleDuplicateWrongGroupAndWrongStateWithoutWrites() = fixture { f ->
         val ops = f.coordinator()
         val target = ops.createGroup("target").getOrThrow()
         val a = ops.createCategory("a", "home").getOrThrow()
         val b = ops.createCategory("b", "home").getOrThrow()
         val inactive = ops.createCategory("inactive", "home").getOrThrow()
-        ops.setCategoryActive(inactive, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(inactive.id, false)
         val outside = ops.createCategory("outside", target.id).getOrThrow()
         val expected = listOf(a.id, b.id)
         val original = f.categories.getAll()
@@ -153,8 +319,8 @@ class DirectoryOperationRepositoryDeviceTest {
         val first = ops.createCategory("first", target.id).getOrThrow()
         val anchor = ops.createCategory("anchor", target.id).getOrThrow()
         val moving = ops.createCategory("moving", "home").getOrThrow()
-        ops.setCategoryActive(opposite, !active).getOrThrow()
-        listOf(first, anchor, moving).forEach { ops.setCategoryActive(it, active).getOrThrow() }
+        f.db.categoryDao().setActiveAtSectionTail(opposite.id, !active)
+        listOf(first, anchor, moving).forEach { f.db.categoryDao().setActiveAtSectionTail(it.id, active) }
         val unchanged = f.categories.findById(opposite.id)
         File(f.rootFile, "常用/moving/source.txt").writeText("retained")
         assertTrue(ops.transferCategory(moving, target.id, opposite.id).isFailure)
@@ -206,7 +372,7 @@ class DirectoryOperationRepositoryDeviceTest {
         val target = ops.createGroup("target").getOrThrow()
         val first = ops.createCategory("first", target.id).getOrThrow()
         val inactive = ops.createCategory("inactive", target.id).getOrThrow()
-        ops.setCategoryActive(inactive, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(inactive.id, false)
         val source = ops.createCategory("source", "home").getOrThrow()
         val before = f.categories.findById(inactive.id)
         ops.transferCategory(source, target.id).getOrThrow()
@@ -221,9 +387,9 @@ class DirectoryOperationRepositoryDeviceTest {
         val ops = f.coordinator()
         val group = ops.createGroup("课程").getOrThrow()
         val first = ops.createCategory("已有", group.id).getOrThrow()
-        ops.setCategoryActive(first, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(first.id, false)
         val source = ops.createCategory("笔记", CategoryGroup.HOME_ID).getOrThrow()
-        ops.setCategoryActive(source, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(source.id, false)
         val folder = File(f.rootFile, "常用/${source.name}")
         File(folder, ".secret").writeText("hidden bytes")
         File(folder, "nested").apply { mkdir() }.resolve("notes.txt").writeText("ordinary bytes")
@@ -245,7 +411,7 @@ class DirectoryOperationRepositoryDeviceTest {
     @Test fun collisionsAndImportRespectCurrentGroupIncludingUnregisteredDirectories() = fixture { f ->
         val ops = f.coordinator()
         val source = ops.createCategory("笔记", CategoryGroup.HOME_ID).getOrThrow()
-        ops.setCategoryActive(source, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(source.id, false)
         assertTrue(ops.createGroup("笔记").isSuccess)
         File(f.rootFile, "occupied").writeText("outside")
         assertTrue(ops.createGroup("occupied").isFailure)
@@ -256,8 +422,8 @@ class DirectoryOperationRepositoryDeviceTest {
         assertNull(f.db.directoryOperationDao().pending())
         assertTrue(File(f.rootFile, "常用/笔记").exists())
         File(f.rootFile, "课程/数学").mkdir()
-        assertEquals(listOf("数学", "笔记"), ops.importCategories(group.id).getOrThrow().createdNames.sorted())
-        assertFalse(ops.importCategories(CategoryGroup.HOME_ID).getOrThrow().createdNames.contains("课程"))
+        assertEquals(listOf("数学", "笔记"), ops.refreshCategories(group.id).getOrThrow().addedNames.sorted())
+        assertFalse(ops.refreshCategories(CategoryGroup.HOME_ID).getOrThrow().addedNames.contains("课程"))
         assertTrue(ops.createCategory("笔记", group.id).isFailure)
         assertEquals(4, f.categories.getAll().size)
     }
@@ -266,11 +432,13 @@ class DirectoryOperationRepositoryDeviceTest {
         val ops = f.coordinator()
         val group = ops.createGroup("课程").getOrThrow()
         val cat = ops.createCategory("数学", group.id).getOrThrow()
-        ops.setCategoryActive(cat, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(cat.id, false)
         assertTrue(ops.deleteGroup(group).isFailure)
-        ops.deleteCategory(cat, false).getOrThrow()
-        assertTrue(ops.deleteGroup(group).isFailure) // Retained physical category.
-        check(File(f.rootFile, "课程/数学").delete())
+        ops.deleteCategory(cat).getOrThrow()
+        assertFalse(File(f.rootFile, "课程/数学").exists())
+        File(f.rootFile, "课程/unregistered").mkdir()
+        assertTrue(ops.deleteGroup(group).isFailure)
+        check(File(f.rootFile, "课程/unregistered").delete())
         val hidden = File(f.rootFile, "课程/.unknown").apply { writeText("external bytes") }
         assertTrue(ops.deleteGroup(group).isFailure)
         assertEquals("external bytes", hidden.readText())
@@ -283,13 +451,14 @@ class DirectoryOperationRepositoryDeviceTest {
         val ops = f.coordinator()
         val group = ops.createGroup("课程").getOrThrow()
         val cat = ops.createCategory("笔记", CategoryGroup.HOME_ID).getOrThrow()
-        ops.setCategoryActive(cat, false).getOrThrow()
+        f.db.categoryDao().setActiveAtSectionTail(cat.id, false)
         check(File(f.rootFile, "常用/笔记").delete())
         assertTrue(ops.transferCategory(cat, group.id).isFailure)
         assertTrue(ops.renameCategory(cat, "改名").isFailure)
         assertNull(f.db.directoryOperationDao().pending())
-        ops.setCategoryActive(cat, true).getOrThrow()
-        assertTrue(File(f.rootFile, "常用/笔记").isDirectory)
+        assertEquals(listOf("笔记"), ops.refreshCategories("home").getOrThrow().removedNames)
+        assertNull(f.categories.findById(cat.id))
+        assertFalse(File(f.rootFile, "常用/笔记").exists())
     }
 
     @Test fun largeManifestUsesAtomicFileWhileRoomAndUnrelatedCaptureGuardsRemainReadable() = fixture { f ->
@@ -474,7 +643,7 @@ class DirectoryOperationRepositoryDeviceTest {
         val ambiguous = f.categories.findById("legacy")!!
         assertTrue(ops.renameCategory(ambiguous, "Renamed").isFailure)
         assertTrue(ops.transferCategory(ambiguous, other.id).isFailure)
-        assertTrue(ops.deleteCategory(ambiguous, true).isFailure)
+        assertTrue(ops.deleteCategory(ambiguous).isFailure)
         assertTrue(ops.renameGroup(f.groups.findById("conflict")!!, "Renamed").isFailure)
         assertEquals("custom bytes", File(f.rootFile, "Foo/custom.txt").readText())
     }
@@ -526,8 +695,12 @@ class DirectoryOperationRepositoryDeviceTest {
     }
 
     private class FileStorage(private val backend: FileBackend) : MediaStorage {
+        var listingFailure: Exception? = null
+        var beforeList: suspend () -> Unit = {}
+        var failDelete = false
+        var access = true
         private fun parent(root: Uri, group: String?) = if (group == null) backend.file(root.toString()) else backend.file(root.toString()).resolve(group)
-        override fun hasPersistedAccess(treeUri: Uri) = true
+        override fun hasPersistedAccess(treeUri: Uri) = access
         override suspend fun prepareRoot(treeUri: Uri, categories: List<Category>) = Result.success(StorageRoot(treeUri.toString(), "fixture", 1))
         override suspend fun groupDirectoryUri(treeUri: Uri, groupName: String?) = runCatching {
             val parent = parent(treeUri, groupName)
@@ -537,6 +710,8 @@ class DirectoryOperationRepositoryDeviceTest {
         override suspend fun createGroupDirectory(treeUri: Uri, name: String) = runCatching { check(parent(treeUri, name).mkdir()); Unit }
         override suspend fun deleteEmptyGroupDirectory(treeUri: Uri, name: String) = runCatching { check(parent(treeUri, name).delete()); Unit }
         override suspend fun listCategoryDirectories(treeUri: Uri, groupName: String?) = runCatching {
+            beforeList()
+            listingFailure?.let { throw it }
             parent(treeUri, groupName).listFiles()!!.filter { it.isDirectory }.map { it.name }.sorted()
         }
         override suspend fun countCategoryMedia(treeUri: Uri, categoryNames: List<String>, groupName: String?) = Result.success(emptyMap<String, Int>())
@@ -546,7 +721,7 @@ class DirectoryOperationRepositoryDeviceTest {
         }
         override suspend fun categoryDirectoryUri(treeUri: Uri, categoryName: String, groupName: String?) = Result.success(Uri.fromFile(parent(treeUri, groupName).resolve(categoryName)))
         override suspend fun renameCategoryDirectory(treeUri: Uri, oldName: String, newName: String, groupName: String?) = Result.failure<Unit>(UnsupportedOperationException())
-        override suspend fun deleteCategoryDirectoryWithContents(treeUri: Uri, categoryName: String, groupName: String?) = runCatching { check(parent(treeUri, groupName).resolve(categoryName).deleteRecursively()); Unit }
+        override suspend fun deleteCategoryDirectoryWithContents(treeUri: Uri, categoryName: String, groupName: String?) = runCatching { check(!failDelete); check(parent(treeUri, groupName).resolve(categoryName).deleteRecursively()); Unit }
         override suspend fun storeTempMedia(treeUri: Uri, tempFile: File, category: Category, mediaKind: MediaKind) = error("No saving in this fixture")
         override suspend fun reserveTarget(treeUri: Uri, category: Category, mediaKind: MediaKind) = Result.failure<Uri>(java.io.IOException("fixture"))
         override suspend fun storeTempMediaToTarget(targetUri: Uri, tempFile: File, category: Category, mediaKind: MediaKind) = error("No saving in this fixture")

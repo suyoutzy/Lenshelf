@@ -84,8 +84,6 @@ class CategoryRepository(private val dao: CategoryDao, private val groupDao: Cat
         )
     }
 
-    suspend fun setActive(id: String, active: Boolean) = dao.setActiveAtSectionTail(id, active)
-
     suspend fun reorder(groupId: String, active: Boolean, expectedIds: List<String>, orderedIds: List<String>) =
         dao.reorderSection(groupId, active, expectedIds, orderedIds)
 

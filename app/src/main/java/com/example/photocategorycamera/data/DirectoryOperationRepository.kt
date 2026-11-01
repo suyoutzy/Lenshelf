@@ -61,8 +61,8 @@ class DirectoryOperationRepository(
                 val parent = storage.groupDirectoryUri(Uri.parse(root.treeUri), null).getOrThrow()
                 val source = backend.children(parent.toString()).firstOrNull { it.name.equals(category.name, ignoreCase = true) }
                 if (source == null) {
-                    // An inactive category may never have had a physical directory.
-                    check(!category.isActive) { "原分类目录“${category.name}”不存在，请先恢复目录后继续迁移" }
+                    // Legacy inactive categories may never have had a physical directory.
+                    // No outstanding material remains here; a later explicit refresh may remove the record.
                     val entity = checkNotNull(database.categoryDao().findById(category.id))
                     database.categoryDao().update(entity.copy(homeAtRoot = false))
                 } else {
@@ -83,11 +83,11 @@ class DirectoryOperationRepository(
 
     private suspend fun ensureCommonDirectory(root: StorageRoot) {
         check(groups.getAll().none { !it.isHome && it.name.equals(CategoryGroup.HOME_NAME, ignoreCase = true) }) {
-            "已有自定义文件夹名为“常用”，请先在管理文件夹中将它改名，再继续迁移"
+            "已有自定义文件夹名为“常用”，请先在首页文件夹菜单中将它改名，再继续迁移"
         }
         check(categories.getAll(CategoryGroup.HOME_ID).none {
             it.needsHomeMigration && it.name.equals(CategoryGroup.HOME_NAME, ignoreCase = true)
-        }) { "根目录已有名为“常用”的旧分类，请先在管理分类中将它改名，再继续迁移" }
+        }) { "根目录已有名为“常用”的旧分类，请先在首页分类菜单中将它改名，再继续迁移" }
         if (database.categoryGroupDao().findById(CategoryGroup.HOME_ID)?.name != CategoryGroup.HOME_NAME) {
             database.categoryGroupDao().setName(CategoryGroup.HOME_ID, CategoryGroup.HOME_NAME)
         }
@@ -190,20 +190,31 @@ class DirectoryOperationRepository(
         category
     }
 
-    suspend fun importCategories(groupId: String): Result<CategoryImportResult> = transaction {
-        val group = requireGroup(groupId)
-        checkGroupNotRenaming(groupId)
-        val excluded = reservedNames(groupId).toMutableSet()
-        val names = storage.listCategoryDirectories(Uri.parse(currentRoot().treeUri), group.directoryName).getOrThrow()
-            .filter { name -> excluded.none { it.equals(name, ignoreCase = true) } }
-        categories.importDirectories(names, groupId)
-    }
-
-    suspend fun setCategoryActive(category: Category, active: Boolean): Result<Unit> = transaction {
-        val current = currentCategory(category.id)
-        checkCategoryNotMutating(current)
-        if (active) storage.ensureCategory(Uri.parse(currentRoot().treeUri), current.name, current.groupName).getOrThrow()
-        categories.setActive(current.id, active)
+    suspend fun refreshCategories(groupId: String): Result<CategoryRefreshResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            data class Snapshot(val root: StorageRoot, val group: CategoryGroup, val categories: List<Category>)
+            suspend fun checkAvailable() {
+                check(dao.pending()?.blocksGroup(groupId) != true) { "当前文件夹有未完成的目录操作，请先处理后刷新" }
+                check(categories.getAll(groupId).none { it.needsHomeMigration }) { "请先完成常用分类迁移后刷新" }
+            }
+            val snapshot = database.withTransaction {
+                checkAvailable()
+                Snapshot(currentRoot(), requireGroup(groupId), categories.getAll(groupId))
+            }
+            val names = storage.listCategoryDirectories(Uri.parse(snapshot.root.treeUri), snapshot.group.name).getOrThrow()
+            database.withTransaction {
+                check(currentRoot() == snapshot.root && requireGroup(groupId) == snapshot.group &&
+                    categories.getAll(groupId) == snapshot.categories) { "文件夹或分类已变化，请重新刷新" }
+                checkAvailable()
+                val protected = snapshot.categories.filter { hasOutstandingMedia(it) }.map { it.id }.toSet()
+                val plan = CategoryRefreshPlanner.plan(names, snapshot.categories, protected)
+                val byId = snapshot.categories.associateBy { it.id }
+                plan.idsToRemove.forEach { categories.delete(it) }
+                val created = categories.importDirectories(plan.namesToCreate, groupId)
+                CategoryRefreshResult(created.createdNames, plan.idsToRemove.map { byId.getValue(it).name },
+                    plan.retainedCount, plan.deferredIds.map { byId.getValue(it).name }, plan.ignoredCount)
+            }
+        }
     }
 
     suspend fun reorderCategory(category: Category, direction: Int): Result<Unit> = transaction {
@@ -217,11 +228,11 @@ class DirectoryOperationRepository(
         reorderCategoriesInTransaction(current.groupId, current.isActive, expected, ordered)
     }
 
-    suspend fun deleteCategory(category: Category, deleteFolderWithContents: Boolean): Result<Unit> = transaction {
+    suspend fun deleteCategory(category: Category): Result<Unit> = transaction {
         val current = currentCategory(category.id)
         requireIdle(current)
-        if (deleteFolderWithContents) checkLegacySourceOwnership(current)
-        if (deleteFolderWithContents) storage.deleteCategoryDirectoryWithContents(
+        checkLegacySourceOwnership(current)
+        storage.deleteCategoryDirectoryWithContents(
             Uri.parse(currentRoot().treeUri), current.name, current.groupName,
         ).getOrThrow()
         categories.delete(current.id)
@@ -437,3 +448,11 @@ class DirectoryOperationRepository(
         runCatching { database.withTransaction { block() } }
     }
 }
+
+data class CategoryRefreshResult(
+    val addedNames: List<String>,
+    val removedNames: List<String>,
+    val retainedCount: Int,
+    val deferredNames: List<String>,
+    val ignoredCount: Int,
+)

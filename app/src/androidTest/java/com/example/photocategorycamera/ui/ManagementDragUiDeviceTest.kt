@@ -54,10 +54,12 @@ class ManagementDragUiDeviceTest {
     private fun showCategories(state: () -> AppUiState = { fixture() },
         reorder: (String, Boolean, List<String>, List<String>, (Boolean) -> Unit) -> Unit = { _, _, _, _, done -> done(false) },
         transfer: (Category, String, String?, (Boolean) -> Unit) -> Unit = { _, _, _, done -> done(false) },
-        lifecycleOwner: LifecycleOwner? = null) {
+        lifecycleOwner: LifecycleOwner? = null,
+        delete: (Category, (Boolean) -> Unit) -> Unit = { _,done -> done(false) }) {
         compose.setContent { CompositionLocalProvider(LocalLifecycleOwner provides (lifecycleOwner ?: LocalLifecycleOwner.current)) {
-            MaterialTheme { CategoryManagementScreen(state(), {}, { _, _ -> }, {}, { _, _ -> },
-                { _, _ -> }, { _, _, _ -> }, { _, _, _ -> }, onReorder = reorder, onDropTransfer = transfer) }
+            MaterialTheme { HomeScreen(state(), {}, {}, onSettings={},onRetry={},onDiscardFailed={},
+                onSaveLegacyDocument={},onDiscardDocument={},onDeleteCategory=delete,
+                onReorderCategories={group,original,result,done->reorder(group,true,original,result,done)}, onDropTransfer=transfer) }
         } }
     }
     private fun fixture() = AppUiState(categories = listOf(a, b, c), allCategories = listOf(a, b, c, x, y), groups = listOf(home, work, other))
@@ -152,7 +154,11 @@ class ManagementDragUiDeviceTest {
         compose.onNodeWithTag("drag-item-x").assertExists()
         moveTo(center("drag-group-home")); compose.mainClock.advanceTimeBy(650)
         compose.onNodeWithTag("drag-item-b").assertExists()
-        compose.onNodeWithContentDescription("返回").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.runOnIdle {
+            val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                .filterIsInstance<ComponentActivity>().single()
+            activity.onBackPressedDispatcher.onBackPressed()
+        }
         release()
         compose.runOnIdle { assertEquals(0, calls) }
     }
@@ -210,6 +216,7 @@ class ManagementDragUiDeviceTest {
         compose.runOnIdle { state = state.copy(directoryOperations = emptyList()) }
         compose.onAllNodesWithTag("drag-item-a").assertCountEquals(1)
         compose.onNodeWithText("未完成 · 正在移动分类").assertExists()
+        compose.onNodeWithContentDescription("${work.name}的文件夹操作").assertIsNotEnabled()
         compose.onNodeWithContentDescription("样品 A的更多操作").assertIsNotEnabled()
         val aBounds = compose.onNodeWithTag("drag-item-a").fetchSemanticsNode().boundsInRoot
         val yBounds = compose.onNodeWithTag("drag-item-y").fetchSemanticsNode().boundsInRoot
@@ -222,46 +229,45 @@ class ManagementDragUiDeviceTest {
         compose.onNodeWithText("未完成 · 正在移动分类").assertDoesNotExist()
     }
 
-    @Test fun inactiveCategoryCanDropIntoEmptyMatchingSectionOnly() {
-        val inactive = a.copy(isActive = false)
-        var result: Pair<String, String?>? = null
-        showCategories(state = { fixture().copy(categories = listOf(inactive), allCategories = listOf(inactive)) },
-            transfer = { category, group, before, done ->
-                assertFalse(category.isActive); result = group to before; done(false)
-            })
-        begin("a"); moveTo(center("drag-group-work")); compose.mainClock.advanceTimeBy(650)
-        moveTo(center("drop-tail-work-false")); release()
-        compose.runOnIdle { assertEquals("work" to null, result) }
+    @Test fun trashDropOnlyOpensConfirmationAndCancelKeepsTheOriginalRow() {
+        var calls = 0
+        showCategories(delete={_,done->calls++;done(true)})
+        begin("a"); moveTo(center("category-trash")); release()
+        compose.onNodeWithText("确认删除").assertExists()
+        compose.runOnIdle { assertEquals(0,calls) }
+        compose.onNodeWithText("取消").performClick()
         compose.onNodeWithTag("drag-item-a").assertExists()
+        compose.runOnIdle { assertEquals(0,calls) }
     }
 
-    @Test fun releasingInOppositeStatusSectionCancels() {
+    @Test fun trashDropConfirmsWholeDirectoryDeleteExactlyOnce() {
         var calls = 0
-        showCategories(state = { fixture().copy(categories = listOf(a), allCategories = listOf(a)) },
-            reorder = { _, _, _, _, _ -> calls++ }, transfer = { _, _, _, _ -> calls++ })
-        begin("a"); moveTo(center("drop-tail-home-false")); release()
-        compose.runOnIdle { assertEquals(0, calls) }
+        showCategories(delete={category,done->assertEquals("a",category.id);calls++;done(true)})
+        begin("a"); moveTo(center("category-trash")); release()
+        compose.onNodeWithText("确认删除").performClick()
+        compose.runOnIdle { assertEquals(1,calls) }
     }
 
     @Test fun groupSortingIgnoresCaptureLockButHomeStaysFixedAndMenusStayLocked() {
         var proposed = emptyList<String>()
         var accessibleMoves = 0
+        var selected by mutableStateOf(home)
         compose.setContent { MaterialTheme {
-            GroupManagementScreen(AppUiState(groups = listOf(home, work, other), lockedGroupIds = setOf(work.id)),
-                {}, { _, _ -> }, { _, _ -> accessibleMoves++ }, { _, _, _ -> }, { _, _ -> },
-                onReorder = { original, ordered, done ->
-                    assertEquals(listOf(work.id, other.id), original); proposed = ordered; done(false)
+            HomeScreen(AppUiState(groups=listOf(home,work,other),selectedGroup=selected,lockedGroupIds=setOf(work.id)),
+                {},{},onSettings={},onRetry={},onDiscardFailed={},onSaveLegacyDocument={},onDiscardDocument={},
+                onSelectGroup={id->selected=listOf(home,work,other).first { it.id==id }},
+                onMoveGroup={_,_->accessibleMoves++},onReorderGroups={original,ordered,done->
+                    assertEquals(listOf(work.id,other.id),original);proposed=ordered;done(false)
                 })
         } }
-        compose.onNodeWithText("固定常用").assertExists()
-        compose.onNodeWithContentDescription("${work.name}的更多操作").assertIsNotEnabled()
+        compose.onNodeWithTag("drag-item-home").assertDoesNotExist()
+        compose.onNodeWithContentDescription("切换到${work.name}").performClick()
+        compose.onNodeWithContentDescription("${work.name}的文件夹操作").assertIsNotEnabled()
         val actions = compose.onNodeWithTag("drag-item-work").fetchSemanticsNode().config[SemanticsActions.CustomActions]
-        compose.runOnIdle {
-            assertTrue(actions.first { it.label == "后移" }.action())
-        }
-        compose.runOnIdle { assertEquals(1, accessibleMoves) }
-        begin("work"); moveTo(center("drop-tail-folder-order-true")); release()
-        compose.runOnIdle { assertEquals(listOf(other.id, work.id), proposed) }
+        compose.runOnIdle { assertTrue(actions.first { it.label=="后移" }.action()) }
+        compose.runOnIdle { assertEquals(1,accessibleMoves) }
+        begin("work");moveTo(center("drop-tail-folder-order-true"));release()
+        compose.runOnIdle { assertEquals(listOf(other.id,work.id),proposed) }
     }
 
     @Test fun stationaryFingerScrollsLongVariableHeightList() {
@@ -272,7 +278,7 @@ class ManagementDragUiDeviceTest {
         showCategories(state = { fixture().copy(categories = categories, allCategories = categories) },
             reorder = { _, _, _, _, done -> calls++; done(false) })
         begin("item-0")
-        val list = compose.onNodeWithTag("management-list").fetchSemanticsNode().boundsInRoot
+        val list = compose.onNodeWithTag("category-list").fetchSemanticsNode().boundsInRoot
         moveTo(Offset(list.center.x, list.bottom - 3f))
         advanceUntilTagExists("drag-item-item-20")
         compose.runOnIdle { assertEquals(0, calls) }

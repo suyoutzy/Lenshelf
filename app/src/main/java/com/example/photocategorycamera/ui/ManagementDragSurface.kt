@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -72,6 +73,10 @@ internal class ManagementDragState(private val scope: CoroutineScope) {
     var trayViewport: Rect = Rect.Zero
     var edgeSizePx = 56f
     var menuWidthPx = 52f
+    var horizontal = false
+    var trashBounds: Rect = Rect.Zero
+    var overTrash by mutableStateOf(false)
+        private set
     private var acknowledgedTransfers = emptySet<String>()
     private var validDrop = false
     private var accepted = false
@@ -144,6 +149,12 @@ internal class ManagementDragState(private val scope: CoroutineScope) {
     fun processPointer(nowMillis: Long? = null) {
         if (!dragging) return
         val current = controller.session ?: return
+        overTrash = world.deleteEnabled && trashBounds.contains(pointer)
+        if (overTrash) {
+            controller.hover(null, 0L)
+            validDrop = false
+            return
+        }
         val trayHit = trayViewport.contains(pointer)
         val entry = if (trayHit) entries.entries.firstOrNull { it.value.contains(pointer) }?.key else null
         // Pointer events have no frame timestamp. Mixing a synthetic zero with the
@@ -167,9 +178,10 @@ internal class ManagementDragState(private val scope: CoroutineScope) {
                 val candidates = world.records.filter { it.partition == partition && it.id != session.source.id }
                 val row = hitRow.value.bounds
                 // A small dead band around the midpoint avoids oscillation during placement animation.
-                val midpoint = row.center.y
-                val before = if (pointer.y < midpoint - 5f) hitRow.key
-                else if (pointer.y > midpoint + 5f) candidates.getOrNull(candidates.indexOfFirst { it.id == hitRow.key } + 1)?.id
+                val midpoint = if (horizontal) row.center.x else row.center.y
+                val coordinate = if (horizontal) pointer.x else pointer.y
+                val before = if (coordinate < midpoint - 5f) hitRow.key
+                else if (coordinate > midpoint + 5f) candidates.getOrNull(candidates.indexOfFirst { it.id == hitRow.key } + 1)?.id
                 else session.beforeId
                 controller.place(partition, before)
             }
@@ -194,8 +206,14 @@ internal class ManagementDragState(private val scope: CoroutineScope) {
         if (!dragging) return
         processPointer()
         val sourceSession = displaySession
-        val result = controller.release(validDrop)
+        val result = controller.release(validDrop, overTrash)
         dragging = false
+        overTrash = false
+        if (result is ManagementDrop.Delete) {
+            restore(sourceSession)
+            onDrop(result) { }
+            return
+        }
         if (result == ManagementDrop.Cancel) {
             restore(sourceSession)
             return
@@ -227,6 +245,7 @@ internal class ManagementDragState(private val scope: CoroutineScope) {
         val current = displaySession
         controller.cancel()
         dragging = false
+        overTrash = false
         restore(current)
     }
 
@@ -266,10 +285,14 @@ internal class ManagementDragState(private val scope: CoroutineScope) {
         lift = null
     }
 
-    fun verticalScrollVelocity(): Float = if (!dragging || trayViewport.contains(pointer) || pointer.x !in viewport.left..viewport.right) 0f
+    fun verticalScrollVelocity(): Float = if (horizontal || !dragging || trayViewport.contains(pointer) || pointer.x !in viewport.left..viewport.right) 0f
         else edgeVelocity(pointer.y, viewport.top, viewport.bottom)
-    fun horizontalScrollVelocity(): Float = if (!dragging || !trayViewport.contains(pointer)) 0f
-        else edgeVelocity(pointer.x, trayViewport.left, trayViewport.right)
+    fun horizontalScrollVelocity(): Float = when {
+        !dragging -> 0f
+        horizontal -> if (viewport.contains(pointer)) edgeVelocity(pointer.x, viewport.left, viewport.right) else 0f
+        trayViewport.contains(pointer) -> edgeVelocity(pointer.x, trayViewport.left, trayViewport.right)
+        else -> 0f
+    }
     private fun edgeVelocity(position: Float, start: Float, end: Float): Float = when {
         position < start || position > end -> 0f
         position < start + edgeSizePx -> -900f * ((start + edgeSizePx - position) / edgeSizePx).coerceIn(0f, 1f)
@@ -291,6 +314,9 @@ internal fun ManagementDragSurface(
     trayState: LazyListState? = null,
     modifier: Modifier = Modifier,
     liftedContent: @Composable (String) -> Unit,
+    horizontal: Boolean = false,
+    excludedTrailingWidth: Dp = 52.dp,
+    rootTag: String = "management-drag-root",
     content: @Composable BoxScope.() -> Unit,
 ) {
     val density = LocalDensity.current
@@ -298,7 +324,8 @@ internal fun ManagementDragSurface(
     SideEffect {
         state.edgeSizePx = with(density) { 56.dp.toPx() }
         // Both card rows have a 48 dp IconButton and 4 dp trailing padding.
-        state.menuWidthPx = with(density) { 52.dp.toPx() }
+        state.menuWidthPx = with(density) { excludedTrailingWidth.toPx() }
+        state.horizontal = horizontal
     }
     BackHandler(state.dragging) { state.cancel() }
     DisposableEffect(state, lifecycle) {
@@ -317,11 +344,11 @@ internal fun ManagementDragSurface(
             val dy = state.verticalScrollVelocity() * seconds
             val dx = state.horizontalScrollVelocity() * seconds
             if (dy != 0f) listState.scrollBy(dy)
-            if (dx != 0f) trayState?.scrollBy(dx)
+            if (dx != 0f) (if (horizontal) listState else trayState)?.scrollBy(dx)
             state.processPointer(now / 1_000_000)
         }
     }
-    Box(modifier.testTag("management-drag-root")
+    Box(modifier.testTag(rootTag)
         .onGloballyPositioned { state.rootOrigin = it.boundsInRoot().topLeft }
         .pointerInput(state) {
             detectDragGesturesAfterLongPress(

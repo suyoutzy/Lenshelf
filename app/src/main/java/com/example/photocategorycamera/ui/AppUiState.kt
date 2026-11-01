@@ -29,6 +29,7 @@ data class AppUiState(
     val pendingCategoryLabels: List<String> = emptyList(),
     val documentDraftLabel: String? = null,
     val categoryFileCounts: Map<String, Int> = emptyMap(),
+    val categoryCountsByGroup: Map<String, Map<String, Int>> = emptyMap(),
     val storageRoot: StorageRoot? = null,
     val hasPendingCapture: Boolean = false,
     val pendingCaptureCount: Int = 0,
@@ -88,6 +89,7 @@ internal data class CategoryFileCounts(
     val rootTreeUri: String? = null,
     val byCategoryId: Map<String, Int> = emptyMap(),
     val groupId: String = CategoryGroup.HOME_ID,
+    val byGroupId: Map<String, Map<String, Int>> = mapOf(groupId to byCategoryId),
 )
 
 internal object AppUiStateMapper {
@@ -168,10 +170,11 @@ internal object AppUiStateMapper {
     )
 
     fun withFileCounts(state: AppUiState, counts: CategoryFileCounts): AppUiState = state.copy(
-        categoryFileCounts = if (state.storageRoot?.treeUri == counts.rootTreeUri && state.selectedGroup.id == counts.groupId) {
-            counts.byCategoryId
+        categoryFileCounts = if (state.storageRoot?.treeUri == counts.rootTreeUri) {
+            counts.byGroupId[state.selectedGroup.id].orEmpty()
         } else {
             emptyMap()
         },
+        categoryCountsByGroup = if (state.storageRoot?.treeUri == counts.rootTreeUri) counts.byGroupId else emptyMap(),
     )
 }

@@ -52,20 +52,24 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    suspend fun refreshCategoryFileCounts() = countRefreshMutex.withLock {
+    suspend fun refreshCategoryFileCounts(groupId: String? = null) = countRefreshMutex.withLock {
         container.initialization.await()
         val settings = currentSettings()
         val root = settings.storageRoot ?: return@withLock
-        val group = container.groups.findById(settings.selectedGroupId)
+        val group = container.groups.findById(groupId ?: settings.selectedGroupId)
             ?: container.groups.findById(CategoryGroup.HOME_ID) ?: return@withLock
-        val categories = container.categories.getAll().filter { it.groupId == group.id && it.isActive }
+        val categories = container.categories.getAll().filter { it.groupId == group.id }
         val counts = categories.groupBy { it.groupName }.flatMap { (directory, entries) ->
             val byName = container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), entries.map { it.name }, directory)
                 .getOrNull().orEmpty()
             entries.mapNotNull { category -> byName[category.name]?.let { category.id to it } }
         }.toMap()
-        fileCounts.value = CategoryFileCounts(root.treeUri, counts, group.id)
+        if (currentSettings().storageRoot?.treeUri != root.treeUri) return@withLock
+        val cached = fileCounts.value.takeIf { it.rootTreeUri == root.treeUri }?.byGroupId.orEmpty()
+        fileCounts.value = CategoryFileCounts(root.treeUri, counts, group.id, cached + (group.id to counts))
     }
+
+    fun loadGroupFileCounts(groupId: String) { viewModelScope.launch { refreshCategoryFileCounts(groupId) } }
 
     fun selectGroup(id: String) {
         viewModelScope.launch {
@@ -106,34 +110,25 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         onComplete = onComplete, action = { container.directoryOperations.deleteGroup(group) },
         onSuccess = { message.value = "已删除空文件夹“${group.name}”" })
 
-    fun addCategory(name: String, onComplete: (Boolean) -> Unit = {}) = mutate("新增分类失败",
+    fun addCategory(groupId: String, name: String, onComplete: (Boolean) -> Unit = {}) = mutate("新增分类失败",
         onComplete = onComplete,
-        action = { container.directoryOperations.createCategory(name, selectedGroupId()) },
+        action = { container.directoryOperations.createCategory(name, groupId) },
         onSuccess = { message.value = "已新增分类“${it.directoryLabel}”" })
 
-    fun importCategoriesFromRoot() = mutate("读取分类文件夹失败", shortBusy = true,
-        action = { container.directoryOperations.importCategories(selectedGroupId()) },
-        onSuccess = { result ->
-            message.value = when {
-                result.importedCount > 0 -> buildString {
-                    append("已导入 ${result.importedCount} 个新分类")
-                    if (result.existingCount > 0) append("，跳过 ${result.existingCount} 个已有分类")
-                    if (result.ignoredCount > 0) append("，忽略 ${result.ignoredCount} 个无效目录")
-                }
-                result.existingCount > 0 -> "当前文件夹没有新分类，已有 ${result.existingCount} 个分类"
-                else -> "当前文件夹没有可导入的新分类，已忽略 ${result.ignoredCount} 个目录"
-            }
+    fun refreshCategories(groupId: String) = mutate("刷新分类失败", shortBusy = true,
+        action = { container.directoryOperations.refreshCategories(groupId) }, onSuccess = { result ->
+            message.value = "新增 ${result.addedNames.size}，移除 ${result.removedNames.size}，保留 ${result.retainedCount}" +
+                (if (result.deferredNames.isNotEmpty()) "；${result.deferredNames.size} 个分类有待处理材料，暂缓移除" else "") +
+                (if (result.ignoredCount > 0) "；忽略 ${result.ignoredCount} 个无效目录" else "")
+            loadGroupFileCounts(groupId)
         })
-
-    fun setCategoryActive(category: Category, active: Boolean) = mutate("分类状态更新失败",
-        action = { container.directoryOperations.setCategoryActive(category, active) })
 
     fun moveCategory(category: Category, direction: Int) = mutate("分类排序失败",
         action = { container.directoryOperations.reorderCategory(category, direction) })
 
-    fun reorderCategories(groupId: String, isActive: Boolean, expectedIds: List<String>, orderedIds: List<String>,
+    fun reorderCategories(groupId: String, expectedIds: List<String>, orderedIds: List<String>,
         onComplete: (Boolean) -> Unit) = mutate("分类列表已变化，请重新排序", onComplete = onComplete,
-        action = { container.directoryOperations.reorderCategories(groupId, isActive, expectedIds, orderedIds) })
+            action = { container.directoryOperations.reorderCategories(groupId, true, expectedIds, orderedIds) })
 
     fun dropTransferCategory(category: Category, targetGroupId: String, beforeId: String?, onComplete: (Boolean) -> Unit) {
         var selectionFailed = false
@@ -166,13 +161,10 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
             action = { container.directoryOperations.transferCategory(category, targetGroupId) },
             onSuccess = { message.value = "正在移动“${category.directoryLabel}”，进度可在目录操作中查看" })
 
-    fun deleteCategory(category: Category, deleteFolderWithContents: Boolean, onComplete: (Boolean) -> Unit = {}) =
+    fun deleteCategory(category: Category, onComplete: (Boolean) -> Unit = {}) =
         mutate("分类删除失败", shortBusy = true, onComplete = onComplete,
-            action = { container.directoryOperations.deleteCategory(category, deleteFolderWithContents) },
-            onSuccess = {
-                message.value = if (deleteFolderWithContents) "分类、文件夹及其中内容已删除"
-                else "分类已删除，文件夹及其中内容已保留"
-            })
+            action = { container.directoryOperations.deleteCategory(category) },
+            onSuccess = { message.value = "分类、文件夹及其中内容已删除" })
 
     fun resolveCategoryDirectory(category: Category, onResolved: (Uri) -> Unit) = mutate("无法打开分类目录",
         action = { container.directoryOperations.resolveCategoryDirectory(category) }, onSuccess = onResolved)

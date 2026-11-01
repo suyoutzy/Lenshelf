@@ -45,7 +45,7 @@ class CategoryDatabaseTest {
         val moved = repository.getAll().filter { it.isActive }.sortedBy { it.sortOrder }
         assertEquals("生活随拍", moved.first().name)
 
-        repository.setActive(work.id, false)
+        database.categoryDao().setActiveAtSectionTail(work.id, false)
         assertFalse(repository.findById(work.id)!!.isActive)
 
         repository.delete(work.id)
@@ -56,7 +56,7 @@ class CategoryDatabaseTest {
     fun importsNewDirectoryAndLeavesArchivedCategoryInactiveIdempotently() = runBlocking {
         repository.ensureSeeded()
         val receipt = repository.getAll().first { it.name == "票据" }
-        repository.setActive(receipt.id, false)
+        database.categoryDao().setActiveAtSectionTail(receipt.id, false)
 
         val first = repository.importDirectories(listOf("票据", "旅行", "工作记录"))
         assertEquals(listOf("旅行"), first.createdNames)

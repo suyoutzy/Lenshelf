@@ -44,6 +44,19 @@ class SafDirectoryBackend(private val resolver: ContentResolver) : DirectoryBack
         if (!DocumentsContract.deleteDocument(resolver, documentUri(uri))) throw IOException("Provider did not delete document")
     }
 
+    /** Missing is safe only after a complete listing; DocumentFile.findFile suppresses query errors. */
+    internal fun deleteDirectoryNamed(parentUri: String, name: String) {
+        val nodes = children(parentUri)
+        if (nodes.any { it.directory && (it.partial || it.virtual) }) throw IOException("目录信息尚不完整，请稍后重试")
+        val candidates = nodes.filter { it.name.equals(name, ignoreCase = true) }
+        if (candidates.size > 1) throw IOException("目录名称存在冲突，未执行删除")
+        val node = candidates.singleOrNull() ?: return
+        if (node.name != name) throw IOException("分类目录名称已变化，请先刷新分类")
+        if (!node.directory) throw IOException("“$name”不是分类目录，未执行删除")
+        delete(node.uri)
+        if (children(parentUri).any { it.name == name }) throw IOException("分类文件夹删除后仍然存在，请重试")
+    }
+
     override fun move(uri: String, sourceParentUri: String, targetParentUri: String): DirectoryNode {
         val result = DocumentsContract.moveDocument(resolver, documentUri(uri), documentUri(sourceParentUri), documentUri(targetParentUri))
             ?: throw IOException("Native move outcome is unknown")

@@ -36,6 +36,20 @@ class SafDirectoryBackendDeviceTest {
         assertTrue(backend.children(root).isEmpty())
     }
 
+    @Test fun deletingAnAbsentCategoryRequiresACompleteUnambiguousProviderListing() {
+        val provider = ListingProvider()
+        val backend = SafDirectoryBackend(ContentResolver.wrap(provider))
+        val root = "content://lenshelf-fixture/tree/root/document/root"
+        for (mode in listOf("null", "loading", "error", "permission", "partial", "virtual", "case-conflict")) {
+            provider.mode = mode
+            try { backend.deleteDirectoryNamed(root, "category"); fail("Delete accepted an untrusted absence: $mode") }
+            catch (_: IOException) { }
+            catch (_: SecurityException) { }
+        }
+        provider.mode = "empty"
+        backend.deleteDirectoryNamed(root, "category")
+    }
+
     @Test fun grantedRootCopiesHiddenNestedBinaryContentAndThenRenames() = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<PhotoCategoryCameraApplication>()
         val root = app.container.settings.settings.first().storageRoot
@@ -99,6 +113,19 @@ class SafDirectoryBackendDeviceTest {
             if (mode == "null") return null
             if (mode == "permission") throw SecurityException("Revoked permission")
             return MatrixCursor(projection ?: emptyArray()).apply {
+                if (mode in listOf("partial", "virtual", "case-conflict")) addRow((projection ?: emptyArray()).map { column ->
+                    when (column) {
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID -> "root/other"
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME -> if (mode == "case-conflict") "Category" else "other"
+                        DocumentsContract.Document.COLUMN_MIME_TYPE -> DocumentsContract.Document.MIME_TYPE_DIR
+                        DocumentsContract.Document.COLUMN_FLAGS -> when (mode) {
+                            "partial" -> DocumentsContract.Document.FLAG_PARTIAL
+                            "virtual" -> DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT
+                            else -> 0
+                        }
+                        else -> null
+                    }
+                })
                 extras = Bundle().apply {
                     if (mode == "loading") putBoolean(DocumentsContract.EXTRA_LOADING, true)
                     if (mode == "error") putString(DocumentsContract.EXTRA_ERROR, "Provider unavailable")

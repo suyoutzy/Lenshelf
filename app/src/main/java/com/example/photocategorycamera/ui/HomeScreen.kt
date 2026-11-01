@@ -72,22 +72,55 @@ import com.example.photocategorycamera.domain.FolderOpenMode
 import com.example.photocategorycamera.domain.XiaomiFileManagerPath
 import com.example.photocategorycamera.R
 
+import androidx.compose.foundation.gestures.DragScope
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun HomeScreen(
     state: AppUiState,
     onOpenCamera: (Category) -> Unit,
     onOpenDirectory: (Category) -> Unit,
-    onManage: () -> Unit,
     onSettings: () -> Unit,
     onRetry: () -> Unit,
     onDiscardFailed: () -> Unit,
     onSaveLegacyDocument: (String) -> Unit,
     onDiscardDocument: (String) -> Unit,
     onSelectGroup: (String) -> Unit = {},
-    onManageGroups: () -> Unit = {},
     onRetryDirectoryOperation: (String) -> Unit = {},
     onMigrateHome: () -> Unit = {},
+    onAddCategory: (String, String, (Boolean) -> Unit) -> Unit = { _, _, done -> done(false) },
+    onRefreshCategories: (String) -> Unit = {},
+    onRenameCategory: (Category, String, (Boolean) -> Unit) -> Unit = { _, _, done -> done(false) },
+    onDeleteCategory: (Category, (Boolean) -> Unit) -> Unit = { _, done -> done(false) },
+    onAddGroup: (String, (Boolean) -> Unit) -> Unit = { _, done -> done(false) },
+    onRenameGroup: (CategoryGroup, String, (Boolean) -> Unit) -> Unit = { _, _, done -> done(false) },
+    onDeleteGroup: (CategoryGroup, (Boolean) -> Unit) -> Unit = { _, done -> done(false) },
+    onReorderCategories: (String, List<String>, List<String>, (Boolean) -> Unit) -> Unit = { _, _, _, done -> done(false) },
+    onMoveCategory: (Category, Int) -> Unit = { _, _ -> },
+    onDropTransfer: (Category, String, String?, (Boolean) -> Unit) -> Unit = { _, _, _, done -> done(false) },
+    onReorderGroups: (List<String>, List<String>, (Boolean) -> Unit) -> Unit = { _, _, done -> done(false) },
+    onMoveGroup: (CategoryGroup, Int) -> Unit = { _, _ -> },
+    onLoadGroupCounts: (String) -> Unit = {},
 ) {
     var confirmDiscardFailed by rememberSaveable { mutableStateOf(false) }
     var confirmDiscardDocument by rememberSaveable { mutableStateOf(false) }
@@ -117,53 +150,233 @@ internal fun HomeScreen(
             dismissButton = { TextButton(onClick = { confirmDiscardFailed = false }) { Text("取消") } },
         )
     }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            buildAnnotatedString {
-                                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface)) { append("Len") }
-                                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append("shelf") }
-                            },
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontSize = 26.sp,
-                                letterSpacing = (-0.4).sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onManage) { Icon(painterResource(R.drawable.ic_manage_categories), "管理分类") }
-                    IconButton(onClick = onManageGroups) { Icon(Icons.Outlined.FolderCopy, "管理文件夹") }
-                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "设置") }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
+
+    val actions = remember { HomeActions() }
+    val drag = rememberManagementDragState()
+    val folderDrag = rememberManagementDragState()
+    val tray = rememberLazyListState()
+    val fallbackList = rememberLazyListState()
+    val lists = remember { mutableStateMapOf<String, LazyListState>() }
+    val groups = state.groups.ifEmpty { listOf(HOME_GROUP) }
+    val groupIds = groups.map { it.id }
+    val all = state.allCategories.ifEmpty { state.categories }
+    var retained by remember { mutableStateOf(emptyList<IncomingCategoryReservation>()) }
+    val reservations = retainIncomingCategoryReservations(retained, state.directoryOperations, all)
+    SideEffect { retained = reservations }
+    val displayState = state.copy(
+        directoryOperations = (state.directoryOperations + reservations.map { it.operation }).distinctBy { it.id },
+        directoryOperationGroupIds = state.directoryOperationGroupIds + reservations.flatMap {
+            listOfNotNull(it.operation.sourceGroupId, it.operation.targetGroupId)
         },
-        bottomBar = {
-            Surface(
-                color = MaterialTheme.colorScheme.background,
-                shadowElevation = 8.dp,
-            ) {
-                Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    GroupTab(state.groups.firstOrNull { it.isHome } ?: HOME_GROUP, state.selectedGroup.id, onSelectGroup)
-                    LazyRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(state.groups.filterNot { it.isHome }, key = CategoryGroup::id) { group ->
-                            GroupTab(group, state.selectedGroup.id, onSelectGroup)
-                        }
-                    }
+        lockedGroupIds = state.lockedGroupIds + reservations.flatMap {
+            listOfNotNull(it.operation.sourceGroupId, it.operation.targetGroupId)
+        },
+        mutationLockedCategoryIds = state.mutationLockedCategoryIds + reservations.map { it.category.id },
+    )
+    // The Pager may evaluate its previous key callback while applying a new count.
+    // Count, keys and content must all read the same snapshot-backed list.
+    val latestGroups by rememberUpdatedState(groups)
+    val pager = rememberPagerState(initialPage = groupIds.indexOf(state.selectedGroup.id).coerceAtLeast(0), pageCount = { latestGroups.size })
+    val visible = groups.getOrElse(pager.currentPage.coerceAtMost(groups.lastIndex)) { groups.first() }
+    val desiredId = if (drag.blocking) drag.previewGroupId ?: state.selectedGroup.id else state.selectedGroup.id
+    var reconciledIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var reconciledId by remember { mutableStateOf<String?>(null) }
+    var navigating by remember { mutableStateOf(false) }
+    var lastReportedId by remember { mutableStateOf(state.selectedGroup.id) }
+    val externalPending by rememberUpdatedState(groupIds != reconciledIds || desiredId != reconciledId)
+    val latestSelect by rememberUpdatedState(onSelectGroup)
+    val scope = rememberCoroutineScope()
+    var navigationJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(groupIds, desiredId) {
+        navigationJob?.cancel()
+        navigating = true
+        val index = groupIds.indexOf(desiredId).coerceAtLeast(0)
+        pager.scrollToPage(index)
+        if (!drag.blocking) lastReportedId = groupIds[index]
+        reconciledIds = groupIds
+        reconciledId = desiredId
+        navigating = false
+    }
+    LaunchedEffect(pager) {
+        snapshotFlow { Triple(pager.isScrollInProgress, pager.settledPage,
+            externalPending || navigating || drag.blocking || folderDrag.blocking || actions.modal) }.collect { (scrolling, index, blocked) ->
+            if (!scrolling && !blocked) {
+                val id = pager.layoutInfo.visiblePagesInfo.firstOrNull { it.index == index }?.key as? String
+                if (id != null && latestGroups.any { it.id == id } && id != lastReportedId) {
+                    lastReportedId = id
+                    latestSelect(id)
                 }
             }
-        },
-    ) { padding ->
-        LazyColumn(
-            Modifier.padding(padding).fillMaxSize().padding(horizontal = 16.dp).testTag("category-list"),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        }
+    }
+    val select: (String) -> Unit = { id ->
+        if (!drag.blocking && !folderDrag.blocking && !actions.modal && !state.busy) {
+            navigationJob?.cancel()
+            navigationJob = scope.launch {
+                navigating = true
+                try {
+                    val index = latestGroups.indexOfFirst { it.id == id }
+                    if (index >= 0) {
+                        pager.animateScrollToPage(index)
+                        if (latestGroups.any { it.id == id }) { lastReportedId = id; latestSelect(id) }
+                    }
+                } finally { navigating = false }
+            }
+        }
+    }
+    LaunchedEffect(visible.id, groupIds) {
+        val index = groupIds.indexOf(visible.id)
+        listOf(index - 1,index,index + 1).mapNotNull { groups.getOrNull(it) }.forEach { onLoadGroupCounts(it.id) }
+    }
+    val world = DragWorld(all.map { DragRecord(it.id, DragPartition(it.groupId), it.toString()) },groupIds,
+        displayState.mutationLockedCategoryIds + displayState.directoryLockedCategoryIds,
+        displayState.directoryOperationGroupIds,
+        state.busy || actions.modal || folderDrag.blocking || (pager.isScrollInProgress && !drag.blocking),
+        displayState.directoryOperations.isEmpty(), deleteEnabled = true)
+    SideEffect {
+        drag.update(world, displayState.directoryOperations.filter { it.kind == "TRANSFER_CATEGORY" }.mapNotNull { it.categoryId }.toSet())
+        drag.onDrop = { drop, complete ->
+            when (drop) {
+                is ManagementDrop.Reorder -> onReorderCategories(drop.source.partition.groupId,drop.originalIds,drop.proposedIds,complete)
+                is ManagementDrop.Transfer -> all.firstOrNull { it.id == drop.source.id }?.let {
+                    onDropTransfer(it,drop.targetGroupId,drop.beforeId,complete)
+                } ?: complete(false)
+                is ManagementDrop.Delete -> { actions.deleteCategory = all.firstOrNull { it.id == drop.source.id }; complete(true) }
+                else -> complete(false)
+            }
+        }
+    }
+    LaunchedEffect(state.selectedGroup.id) { drag.followSelectedGroup(state.selectedGroup.id) }
+    val enabled = !state.busy && !drag.blocking && !folderDrag.blocking && !actions.modal && !pager.isScrollInProgress && !navigating
+    val activeGroup = groups.firstOrNull { it.id == (if (drag.blocking) drag.previewGroupId else visible.id) } ?: visible
+    ManagementDragSurface(drag,lists[activeGroup.id] ?: fallbackList,tray,Modifier.fillMaxSize(),
+        excludedTrailingWidth = 104.dp, liftedContent = { id ->
+            all.firstOrNull { it.id == id }?.let { category ->
+                HomeCategoryCard(category,null,false,false,false,{}, {}, {}, {}, {},
+                    Modifier.fillMaxSize().clearAndSetSemantics { })
+            }
+        }) {
+        Scaffold(topBar = {
+            TopAppBar(title = { Text(buildAnnotatedString {
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface)) { append("Len") }
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append("shelf") }
+            },style = MaterialTheme.typography.titleLarge.copy(fontSize = 26.sp,letterSpacing = (-.4).sp,fontWeight = FontWeight.Bold)) },
+                actions = {
+                    IconButton(onClick = { actions.addCategoryIn = visible },enabled = enabled) { Icon(Icons.Default.Add,"新增分类") }
+                    IconButton(onClick = { onRefreshCategories(visible.id) },enabled = enabled) { Icon(Icons.Default.Refresh,"刷新当前文件夹分类") }
+                    IconButton(onClick = onSettings,enabled = enabled) { Icon(Icons.Default.Settings,"设置") }
+                },colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
+        },bottomBar = {
+            if (drag.dragging) HomeTransferTray(displayState,drag,tray)
+            else HomeFolderBar(displayState,visible.id,actions,folderDrag,drag.blocking || pager.isScrollInProgress || navigating,select,onMoveGroup,onReorderGroups)
+        }) { padding ->
+            HorizontalPager(pager,Modifier.padding(padding).fillMaxSize().testTag("home-pager")
+                .onGloballyPositioned { drag.viewport = it.boundsInRoot() }, key = { latestGroups[it].id },
+                userScrollEnabled = !drag.blocking && !folderDrag.blocking && !actions.modal && !state.busy && !navigating) { page ->
+                val group = latestGroups.getOrNull(page) ?: return@HorizontalPager
+                val list = rememberLazyListState()
+                DisposableEffect(group.id,list) { lists[group.id] = list; onDispose { lists.remove(group.id) } }
+                val partition = DragPartition(group.id)
+                val real = all.filter { it.groupId == group.id }
+                val incoming = reservations.filter { it.operation.targetGroupId == group.id && real.none { row -> row.id == it.category.id } }
+                val pending = incoming.map { it.category.copy(groupId = group.id,groupName = group.name) }
+                val rows = real + pending
+                val ids = real.map { it.id }.toMutableList()
+                incoming.forEach { reservation ->
+                    val anchor = reservation.operation.targetBeforeCategoryId?.let(ids::indexOf)?.takeIf { it >= 0 } ?: ids.size
+                    ids.add(anchor,reservation.category.id)
+                }
+                val ordered = drag.orderedIds(partition,ids)
+                val active = group.id == activeGroup.id
+                val counts = state.categoryCountsByGroup[group.id].orEmpty().ifEmpty {
+                    if (group.id == state.selectedGroup.id) state.categoryFileCounts else emptyMap()
+                }
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)
+                    .testTag(if (active) "category-list" else "category-list-${group.id}"),state = list,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    homeStatusItems(displayState,onMigrateHome,onRetryDirectoryOperation,onSaveLegacyDocument,
+                        { confirmDiscardDocument = true },onRetry,{ confirmDiscardFailed = true })
+                    item(key = "head") { Box(Modifier.fillMaxWidth().height(4.dp).let {
+                        if (active) it.dragDropArea(drag,"drop-head-${group.id}-true",partition,ids.firstOrNull { it != drag.displaySession?.source?.id }) else it
+                    }) }
+                    items(ordered,key = { it }) { id ->
+                        // A cross-folder drag previews the source before a transfer is reserved.
+                        val category = rows.firstOrNull { it.id == id } ?: all.firstOrNull { it.id == id }
+                            ?.copy(groupId = group.id, groupName = group.name) ?: return@items
+                        val transferring = displayState.directoryOperations.any { it.categoryId == id }
+                        val directoryLocked = id in displayState.directoryLockedCategoryIds || transferring
+                        val mutationLocked = id in displayState.mutationLockedCategoryIds || directoryLocked || category.needsHomeMigration || group.id in displayState.directoryOperationGroupIds
+                        HomeCategoryCard(category,counts[id],directoryLocked,enabled,mutationLocked,
+                            { onOpenCamera(category) },{ onOpenDirectory(category) },{ actions.renameCategory = category },
+                            { actions.deleteCategory = category },{ actions.menuOpen = it },
+                            Modifier.fillMaxWidth().animateItem().let {
+                                if (active) it.dragItem(drag,id,partition) else it
+                            }.graphicsLayer { alpha = if (drag.lift?.id == id) .25f else 1f }
+                                .semantics { if (!mutationLocked) customActions = listOf(
+                                    CustomAccessibilityAction("前移") { onMoveCategory(category,-1);true },
+                                    CustomAccessibilityAction("后移") { onMoveCategory(category,1);true }) },
+                            statusCaption = reservations.firstOrNull { it.category.id == id }?.let {
+                                if (it.operation.error != null) "未完成 · 移动失败，等待重试"
+                                else if (it.operation.targetGroupId == group.id) "未完成 · 正在移动分类" else "未完成 · 正在转移分类"
+                            })
+                    }
+                    if (rows.isEmpty()) item(key = "empty") {
+                        Text("当前文件夹暂无分类，点击顶部＋新增，或刷新已有目录。",style = MaterialTheme.typography.bodyMedium)
+                    }
+                    item(key = "tail") { Box(Modifier.fillMaxWidth().height(if (rows.isEmpty()) 160.dp else 64.dp).let {
+                        if (active) it.dragDropArea(drag,"drop-tail-${group.id}-true",partition,null) else it
+                    }) }
+                }
+            }
+        }
+    }
+    HomeActionDialogs(actions,state,onAddCategory,onRenameCategory,onDeleteCategory,onAddGroup,onRenameGroup,onDeleteGroup)
+}
+
+@Composable
+private fun HomeCategoryCard(category: Category, count: Int?, directoryLocked: Boolean, enabled: Boolean,
+    mutationLocked: Boolean, openCamera: () -> Unit, openDirectory: () -> Unit, rename: () -> Unit, delete: () -> Unit,
+    onMenu: (Boolean) -> Unit, modifier: Modifier = Modifier, statusCaption: String? = null) {
+    var menu by remember(category.id) { mutableStateOf(false) }
+    Card(modifier,colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).semantics { contentDescription = "拍摄${category.directoryLabel}" }
+                .clickable(enabled = enabled && !directoryLocked && !category.needsHomeMigration,onClick = openCamera).padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Surface(shape = RoundedCornerShape(14.dp),color = MaterialTheme.colorScheme.primaryContainer) {
+                    Icon(Icons.Default.CameraAlt,null,Modifier.padding(11.dp).size(24.dp),tint = MaterialTheme.colorScheme.primary)
+                }
+                Column {
+                    Text(category.name,style = MaterialTheme.typography.titleMedium)
+                    Text(when {
+                        statusCaption != null -> statusCaption
+                        category.needsHomeMigration -> "等待迁入常用文件夹"
+                        directoryLocked -> "目录操作完成后可修改"
+                        else -> count?.let { "$it 个文件" } ?: "暂无法统计"
+                    },style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Box {
+                IconButton(onClick = { menu = true; onMenu(true) },enabled = enabled && !mutationLocked) {
+                    Icon(Icons.Default.MoreVert,"${category.name}的更多操作")
+                }
+                DropdownMenu(menu,onDismissRequest = { menu = false; onMenu(false) }) {
+                    DropdownMenuItem(text = { Text("重命名分类") },onClick = { menu = false; onMenu(false); rename() })
+                    DropdownMenuItem(text = { Text("删除分类",color = MaterialTheme.colorScheme.error) },onClick = { menu = false; onMenu(false); delete() })
+                }
+            }
+            IconButton(onClick = openDirectory,enabled = enabled && !directoryLocked,modifier = Modifier.padding(end = 8.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant,RoundedCornerShape(12.dp))) {
+                Icon(Icons.Default.Folder,"在文件管理器中打开${category.name}",tint = MaterialTheme.colorScheme.secondary)
+            }
+        }
+    }
+}
+
+private fun LazyListScope.homeStatusItems(state: AppUiState,onMigrateHome: () -> Unit,
+    onRetryDirectoryOperation: (String) -> Unit,onSaveLegacyDocument: (String) -> Unit,
+    onRequestDiscardDocument: () -> Unit,onRetry: () -> Unit,onRequestDiscardFailed: () -> Unit) {
             if (state.homeMigrationLabels.isNotEmpty() && state.directoryOperations.isEmpty()) {
                 item(key = "home-migration") {
                     Card(Modifier.fillMaxWidth()) {
@@ -187,7 +400,7 @@ internal fun HomeScreen(
                             Text("分类：" + (state.documentDraftLabel ?: "${CategoryGroup.HOME_NAME}/${draft.categoryName}") + " · 尚未归档")
                             Row {
                                 TextButton(onClick = { onSaveLegacyDocument(draft.id) }, enabled = !state.busy) { Text("保存旧草稿") }
-                                TextButton(onClick = { confirmDiscardDocument = true }) { Text("丢弃") }
+                                TextButton(onClick = { onRequestDiscardDocument() }) { Text("丢弃") }
                             }
                         }
                     }
@@ -220,90 +433,15 @@ internal fun HomeScreen(
                                     TextButton(onClick = onRetry) { Icon(Icons.Default.Refresh, null); Text("重试") }
                                 }
                                 if (state.failedCaptureCount > 0) {
-                                    TextButton(onClick = { confirmDiscardFailed = true }) { Text("清除失败记录") }
+                                    TextButton(onClick = { onRequestDiscardFailed() }) { Text("清除失败记录") }
                                 }
                             }
                         }
                     }
                 }
             }
-            items(state.categories.filter { it.isActive }, key = Category::id) { category ->
-                val directoryLocked = category.id in state.directoryLockedCategoryIds
-                Card(
-                    Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Row(
-                            Modifier.weight(1f).semantics { contentDescription = "拍摄${category.directoryLabel}" }
-                                .clickable(enabled = !directoryLocked) { onOpenCamera(category) }.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                            ) {
-                                Icon(
-                                    Icons.Default.CameraAlt,
-                                    null,
-                                    Modifier.padding(11.dp).size(24.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                            Column {
-                                Text(category.name, style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    if (category.needsHomeMigration) "等待迁入常用文件夹"
-                                    else if (directoryLocked) "目录正在变更，暂不可拍摄"
-                                    else state.categoryFileCounts[category.id]?.let { "$it 个文件" } ?: "暂无法统计",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                        Column(
-                            Modifier.padding(end = 8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            IconButton(
-                                onClick = { onOpenDirectory(category) },
-                                enabled = !directoryLocked,
-                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
-                            ) {
-                                Icon(Icons.Default.Folder, "在文件管理器中打开${category.name}", tint = MaterialTheme.colorScheme.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-            if (state.categories.none { it.isActive }) {
-                item { Text("当前文件夹暂无启用分类，可在“管理分类”中新建或恢复分类。",
-                    style = MaterialTheme.typography.bodyMedium) }
-            }
-            item { Spacer(Modifier.height(8.dp)) }
-        }
-    }
-}
 
-@Composable
-private fun GroupTab(group: CategoryGroup, selectedId: String, onSelect: (String) -> Unit) {
-    FilterChip(selected = group.id == selectedId, onClick = { onSelect(group.id) },
-        colors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = MaterialTheme.colorScheme.primary,
-            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-        ),
-        modifier = Modifier.widthIn(max = 160.dp).semantics { contentDescription = "切换到${group.name}" },
-        label = { Text(shortGroupName(group.name), maxLines = 1, overflow = TextOverflow.Ellipsis) })
 }
-
-private fun shortGroupName(name: String): String =
-    if (name.codePointCount(0, name.length) <= 4) name else name.substring(0, name.offsetByCodePoints(0, 4)) + "…"
 
 @Composable
 internal fun DirectoryOperationCard(operation: DirectoryOperationUiState, onRetry: (String) -> Unit) {

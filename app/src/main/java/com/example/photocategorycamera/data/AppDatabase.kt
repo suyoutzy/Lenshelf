@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [CategoryEntity::class, CategoryGroupEntity::class, CaptureTaskEntity::class, DocumentDraftEntity::class, DirectoryOperationEntity::class],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -18,6 +18,24 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun documentDraftDao(): DocumentDraftDao
 
     companion object {
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                val orders = mutableListOf<Pair<String, Int>>()
+                database.query("SELECT id,groupId FROM categories ORDER BY groupId,isActive DESC,sortOrder,createdAt,id").use { cursor ->
+                    var group: String? = null
+                    var order = 0
+                    while (cursor.moveToNext()) {
+                        val nextGroup = cursor.getString(1)
+                        if (group != nextGroup) { group = nextGroup; order = 0 }
+                        orders += cursor.getString(0) to order++
+                    }
+                }
+                orders.forEach { (id, order) ->
+                    database.execSQL("UPDATE categories SET isActive=1,sortOrder=? WHERE id=?", arrayOf(order, id))
+                }
+            }
+        }
+
         val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE capture_tasks ADD COLUMN photoDateStampText TEXT DEFAULT NULL")

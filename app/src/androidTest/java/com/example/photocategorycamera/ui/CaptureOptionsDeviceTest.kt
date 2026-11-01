@@ -9,9 +9,20 @@ import com.example.photocategorycamera.domain.PhotoDateStampFormat
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.ExternalResource
+import android.os.ParcelFileDescriptor
+import androidx.test.platform.app.InstrumentationRegistry
 
 class CaptureOptionsDeviceTest {
-    @get:Rule val compose = createComposeRule()
+    @get:Rule(order = 0) val foreground = object : ExternalResource() {
+        override fun before() {
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(
+                "am start -W -n ${instrumentation.targetContext.packageName}/androidx.activity.ComponentActivity"))
+                .bufferedReader().use { it.readText() }
+        }
+    }
+    @get:Rule(order = 1) val compose = createComposeRule()
 
     @Test fun dateMenuTogglesAndSelectsTimeFormat() {
         var enabled = false

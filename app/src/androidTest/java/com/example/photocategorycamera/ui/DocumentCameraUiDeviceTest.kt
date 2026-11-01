@@ -72,7 +72,7 @@ class DocumentCameraUiDeviceTest {
             val previous = runBlocking { container.categories.getAll(CategoryGroup.HOME_ID).single { it.name == previousName } }
             val previousParent = previous.groupName?.let { rootDocument.findFile(it) } ?: rootDocument
             require(previousParent?.findFile(previousName)?.isDirectory == true)
-            runBlocking { container.directoryOperations.deleteCategory(previous, true).getOrThrow() }
+            runBlocking { container.directoryOperations.deleteCategory(previous).getOrThrow() }
         }
         val settingsBefore = runBlocking { container.settings.settings.first() }
         val selectedBefore = settingsBefore.selectedGroupId
@@ -164,7 +164,7 @@ class DocumentCameraUiDeviceTest {
         }
         assertEquals(expectedFiles, runBlocking { container.mediaStorage.countCategoryMedia(Uri.parse(root.treeUri), listOf(name), parentName).getOrThrow()[name] })
         runBlocking {
-            container.directoryOperations.deleteCategory(category, true).getOrThrow()
+            container.directoryOperations.deleteCategory(category).getOrThrow()
             if (group != null) container.directoryOperations.deleteGroup(group).getOrThrow()
         }
         } finally { runBlocking {

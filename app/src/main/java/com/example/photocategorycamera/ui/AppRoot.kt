@@ -42,6 +42,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.photocategorycamera.AppContainer
 import com.example.photocategorycamera.domain.FolderOpenMode
@@ -50,8 +51,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val HOME = "home"
-private const val CATEGORIES = "categories"
-private const val GROUPS = "groups"
 private const val SETTINGS = "settings"
 private const val CAMERA = "camera"
 
@@ -66,6 +65,8 @@ fun AppRoot(
     val folderFeedback = remember { SnackbarHostState() }
     val context = LocalContext.current
     val xiaomiDevice = remember { isXiaomiDevice() }
+    val navController = rememberNavController()
+    val navigationEntry by navController.currentBackStackEntryAsState()
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -82,7 +83,6 @@ fun AppRoot(
         if (state.storageRoot == null) {
             SetupScreen(state.busy, onChooseDirectory)
         } else {
-            val navController = rememberNavController()
             NavHost(navController = navController, startDestination = HOME) {
                     composable(HOME) {
                         val homeLifecycle = LocalLifecycleOwner.current
@@ -91,7 +91,7 @@ fun AppRoot(
                             state.storageRoot?.treeUri,
                             state.selectedGroup.id,
                             state.selectedGroup.name,
-                            state.categories.map { it.id to it.isActive },
+                            state.categories.map { it.id },
                             state.pendingCaptureCount,
                         ) {
                             homeLifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -112,45 +112,28 @@ fun AppRoot(
                                     }
                                 }
                             },
-                            onManage = { navController.navigate(CATEGORIES) },
                             onSettings = { navController.navigate(SETTINGS) },
                             onRetry = appViewModel::retryPending,
                             onDiscardFailed = appViewModel::discardFailedCaptures,
                             onSaveLegacyDocument = appViewModel::saveLegacyDocument,
                             onDiscardDocument = appViewModel::discardDocument,
                             onSelectGroup = appViewModel::selectGroup,
-                            onManageGroups = { navController.navigate(GROUPS) },
                             onRetryDirectoryOperation = appViewModel::retryDirectoryOperation,
                             onMigrateHome = appViewModel::migrateHomeCategories,
-                        )
-                    }
-                    composable(CATEGORIES) {
-                        CategoryManagementScreen(
-                            state = state,
-                            onBack = navController::popBackStack,
-                            onAdd = appViewModel::addCategory,
-                            onImport = appViewModel::importCategoriesFromRoot,
-                            onSetActive = appViewModel::setCategoryActive,
-                            onMove = appViewModel::moveCategory,
-                            onRename = appViewModel::renameCategory,
-                            onDelete = appViewModel::deleteCategory,
-                            onTransfer = appViewModel::transferCategory,
-                            onReorder = appViewModel::reorderCategories,
+                            onAddCategory = appViewModel::addCategory,
+                            onRefreshCategories = appViewModel::refreshCategories,
+                            onRenameCategory = appViewModel::renameCategory,
+                            onDeleteCategory = appViewModel::deleteCategory,
+                            onAddGroup = appViewModel::addGroup,
+                            onRenameGroup = appViewModel::renameGroup,
+                            onDeleteGroup = appViewModel::deleteGroup,
+                            onReorderCategories = appViewModel::reorderCategories,
+                            onMoveCategory = appViewModel::moveCategory,
                             onDropTransfer = appViewModel::dropTransferCategory,
-                            onRetryDirectoryOperation = appViewModel::retryDirectoryOperation,
+                            onReorderGroups = appViewModel::reorderGroups,
+                            onMoveGroup = appViewModel::moveGroup,
+                            onLoadGroupCounts = appViewModel::loadGroupFileCounts,
                         )
-                    }
-                    composable(GROUPS) {
-                        GroupManagementScreen(state = state, onBack = navController::popBackStack,
-                            onAdd = { name, complete -> appViewModel.addGroup(name) { success ->
-                                complete(success)
-                                if (success) navController.popBackStack(HOME, inclusive = false)
-                            } },
-                            onMove = appViewModel::moveGroup,
-                            onReorder = appViewModel::reorderGroups,
-                            onRename = appViewModel::renameGroup,
-                            onDelete = appViewModel::deleteGroup,
-                            onRetryDirectoryOperation = appViewModel::retryDirectoryOperation)
                     }
                     composable(SETTINGS) {
                         SettingsScreen(
@@ -199,7 +182,9 @@ fun AppRoot(
                     }
             }
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+        // Keep operation feedback above the home folder controls so they remain tappable.
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+            .padding(bottom = if (navigationEntry?.destination?.route == HOME) 64.dp else 0.dp))
         SnackbarHost(folderFeedback, Modifier.align(Alignment.Center).padding(horizontal = 24.dp)) { data ->
             Surface(
                 modifier = Modifier.widthIn(max = 320.dp),

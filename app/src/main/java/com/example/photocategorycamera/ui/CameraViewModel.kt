@@ -88,7 +88,7 @@ class CameraViewModel(
                 val selected = categories.firstOrNull { it.id == (mutableState.value.category?.id ?: categoryId) }
                 mutableState.value = mutableState.value.copy(
                     category = selected,
-                    activeCategories = categories.filter { it.isActive && it.groupId == selected?.groupId },
+                    activeCategories = categories.filter { it.groupId == selected?.groupId },
                     storageRoot = settings.storageRoot,
                     directoryLocked = selected == null || selected.needsHomeMigration || operations.any { it.blocksCategory(selected.id, selected.groupId) },
                 )

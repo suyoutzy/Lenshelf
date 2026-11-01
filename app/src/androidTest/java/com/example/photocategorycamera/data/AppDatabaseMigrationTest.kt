@@ -13,6 +13,44 @@ import org.junit.runner.RunWith
 class AppDatabaseMigrationTest {
     private val name = "migration-test.db"
 
+    @Test fun migrate9To10RestoresInactiveCategoriesAfterActiveOnesAndPreservesFrozenRecipes() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(name)
+        val initial = Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+        initial.openHelper.writableDatabase.apply {
+            execSQL("INSERT INTO category_groups VALUES ('home','常用',-1,0)")
+            execSQL("INSERT INTO category_groups VALUES ('custom','课程',0,1)")
+            execSQL("INSERT INTO categories VALUES ('hidden-a','旧停用',0,0,1,'home',0)")
+            execSQL("INSERT INTO categories VALUES ('active-b','第二个',8,1,2,'home',0)")
+            execSQL("INSERT INTO categories VALUES ('active-a','第一个',3,1,3,'home',0)")
+            execSQL("INSERT INTO categories VALUES ('custom-hidden','其他停用',2,0,4,'custom',0)")
+            execSQL("INSERT INTO capture_tasks (id,tempPath,categoryId,categoryName,rootTreeUri,mediaKind,stage,createdAt,updatedAt,photoDateStampText,sourcePath) VALUES ('stamp','output.jpg','hidden-a','旧停用','content://root','PHOTO','PHOTO_RETRY',11,12,'2026-10-28 14:35','source.jpg')")
+            execSQL("INSERT INTO document_drafts (id,sourcePath,categoryId,categoryName,rootTreeUri,quadValue,effectValue,quarterTurns,stage,createdAt,processingVersion) VALUES ('doc','doc.jpg','active-a','第一个','content://root','','ENHANCED',0,'PROCESSING',13,2)")
+            execSQL("PRAGMA user_version = 9")
+        }
+        initial.close()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
+            .addMigrations(AppDatabase.MIGRATION_9_10).build()
+        try {
+            val db = migrated.openHelper.readableDatabase
+            db.query("SELECT id,sortOrder,isActive FROM categories WHERE groupId='home' ORDER BY sortOrder").use {
+                val ids = mutableListOf<String>()
+                while (it.moveToNext()) { ids += it.getString(0); assertEquals(ids.size-1, it.getInt(1)); assertEquals(1, it.getInt(2)) }
+                assertEquals(listOf("active-a","active-b","hidden-a"), ids)
+            }
+            db.query("SELECT sortOrder,isActive FROM categories WHERE id='custom-hidden'").use {
+                assertTrue(it.moveToFirst()); assertEquals(0,it.getInt(0)); assertEquals(1,it.getInt(1))
+            }
+            db.query("SELECT tempPath,sourcePath,photoDateStampText,stage FROM capture_tasks").use {
+                assertTrue(it.moveToFirst()); assertEquals("output.jpg",it.getString(0)); assertEquals("source.jpg",it.getString(1))
+                assertEquals("2026-10-28 14:35",it.getString(2)); assertEquals("PHOTO_RETRY",it.getString(3))
+            }
+            db.query("SELECT sourcePath,processingVersion,effectValue FROM document_drafts").use {
+                assertTrue(it.moveToFirst()); assertEquals("doc.jpg",it.getString(0)); assertEquals(2,it.getInt(1)); assertEquals("ENHANCED",it.getString(2))
+            }
+        } finally { migrated.close() }
+    }
+
     @Test
     fun migrate1To2PreservesCategoriesAndCreatesCaptureQueue() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -35,6 +73,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
+                AppDatabase.MIGRATION_9_10,
             ).build()
         try {
             val cursor = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -73,6 +112,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
+                AppDatabase.MIGRATION_9_10,
             ).build()
         try {
             val categories = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -101,7 +141,7 @@ class AppDatabaseMigrationTest {
             close()
         }
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             database.openHelper.readableDatabase.query("SELECT mediaKind, tempPath, rootTreeUri, targetUri, stage FROM capture_tasks WHERE id = 'legacy'").use {
                 assertEquals(true, it.moveToFirst())
@@ -134,13 +174,13 @@ class AppDatabaseMigrationTest {
             close()
         }
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             val db = database.openHelper.writableDatabase
             db.query("SELECT name, sortOrder, isActive, createdAt, groupId FROM categories WHERE id='one'").use {
                 assertEquals(true, it.moveToFirst())
-                assertEquals("票据", it.getString(0)); assertEquals(7, it.getInt(1))
-                assertEquals(0, it.getInt(2)); assertEquals(123L, it.getLong(3)); assertEquals("home", it.getString(4))
+                assertEquals("票据", it.getString(0)); assertEquals(0, it.getInt(1))
+                assertEquals(1, it.getInt(2)); assertEquals(123L, it.getLong(3)); assertEquals("home", it.getString(4))
             }
             db.query("SELECT name FROM category_groups WHERE id='home'").use {
                 assertEquals(true, it.moveToFirst()); assertEquals("常用", it.getString(0))
@@ -184,7 +224,7 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+            .addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             val db = migrated.openHelper.writableDatabase
             db.query("SELECT name FROM category_groups WHERE id='home'").use {
@@ -194,7 +234,7 @@ class AppDatabaseMigrationTest {
             db.query("SELECT id,homeAtRoot,sortOrder,isActive,createdAt FROM categories ORDER BY id").use {
                 assertEquals(true, it.moveToFirst()); assertEquals("custom-cat", it.getString(0)); assertEquals(0, it.getInt(1))
                 assertEquals(true, it.moveToNext()); assertEquals("home-cat", it.getString(0)); assertEquals(1, it.getInt(1))
-                assertEquals(7, it.getInt(2)); assertEquals(0, it.getInt(3)); assertEquals(123L, it.getLong(4))
+                assertEquals(0, it.getInt(2)); assertEquals(1, it.getInt(3)); assertEquals(123L, it.getLong(4))
             }
             for (table in listOf("capture_tasks", "document_drafts")) db.query("SELECT rootTreeUri,groupName FROM $table").use {
                 assertEquals(true, it.moveToFirst()); assertEquals("content://old-root", it.getString(0)); assertEquals(true, it.isNull(1))
@@ -220,10 +260,10 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             val db = migrated.openHelper.writableDatabase
-            db.query("PRAGMA user_version").use { assertEquals(true, it.moveToFirst()); assertEquals(9, it.getInt(0)) }
+            db.query("PRAGMA user_version").use { assertEquals(true, it.moveToFirst()); assertEquals(10, it.getInt(0)) }
             db.query("SELECT id,kind,categoryId,sourceGroupId,targetGroupId,rootTreeUri,sourceGroupName,targetGroupName,sourceName,targetName,stateJson,stage,error,createdAt,updatedAt,slot,targetBeforeCategoryId FROM directory_operations ORDER BY id DESC").use {
                 assertEquals(true, it.moveToFirst())
                 assertEquals(listOf("native", "TRANSFER_CATEGORY", "cat", "home", "trip", "content://root", null, "旅行", "笔记", "笔记", "journal:native", "FILESYSTEM_DONE", null, "11", "12", "1", null),
@@ -234,7 +274,7 @@ class AppDatabaseMigrationTest {
                 assertEquals(false, it.moveToNext())
             }
             db.query("SELECT sortOrder,isActive,createdAt,groupId,homeAtRoot FROM categories WHERE id='cat'").use {
-                assertEquals(true, it.moveToFirst()); assertEquals(7, it.getInt(0)); assertEquals(0, it.getInt(1))
+                assertEquals(true, it.moveToFirst()); assertEquals(0, it.getInt(0)); assertEquals(1, it.getInt(1))
                 assertEquals(123L, it.getLong(2)); assertEquals("home", it.getString(3)); assertEquals(1, it.getInt(4))
             }
             db.execSQL("INSERT INTO directory_operations (id,kind,sourceGroupId,targetGroupId,rootTreeUri,sourceName,targetName,stateJson,stage,createdAt,updatedAt) VALUES ('new','RENAME_GROUP','trip','trip','content://root','旅行','出行','','COMMITTED',31,32)")
@@ -255,7 +295,7 @@ class AppDatabaseMigrationTest {
             execSQL("PRAGMA user_version = 8")
         }
         initial.close()
-        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9).build()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             migrated.openHelper.readableDatabase.query("SELECT tempPath,targetUri,photoDateStampText,sourcePath,stage FROM capture_tasks").use {
                 assertTrue(it.moveToFirst()); assertEquals("source.jpg", it.getString(0)); assertEquals("content://frozen-target", it.getString(1))

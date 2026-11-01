@@ -4,6 +4,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ManagementDragControllerTest {
+    @Test fun trashReleaseIsADeleteIntentAndCannotAlsoCommitAReorder() {
+        val controller = ManagementDragController()
+        controller.start("a", world().copy(deleteEnabled = true))
+        controller.place(source, null)
+        assertEquals(ManagementDrop.Delete(record("a")), controller.release(false, overTrash = true))
+        assertEquals(ManagementDrop.Cancel, controller.release(true, overTrash = true))
+    }
+
+    @Test fun trashRequiresExplicitCategoryDeleteCapabilityAndPointerInsideTarget() {
+        val controller = ManagementDragController()
+        controller.start("a", world())
+        assertEquals(ManagementDrop.Cancel, controller.release(false, overTrash = true))
+        controller.start("a", world().copy(deleteEnabled = true))
+        assertEquals(ManagementDrop.Cancel, controller.release(false, overTrash = false))
+    }
+
     private val source = DragPartition("home", true)
     private val target = DragPartition("work", true)
     private fun record(id: String, partition: DragPartition = source) = DragRecord(id, partition)

@@ -49,7 +49,7 @@ class SafPhotoStorage(
                 val root = requireWritableRoot(treeUri)
                 ensureNoMedia(root)
                 verifyWritable(root)
-                categories.filter { it.isActive }.forEach { ensureDirectory(groupDirectory(root, it.groupName, create = true), it.name) }
+                categories.forEach { ensureDirectory(groupDirectory(root, it.groupName, create = true), it.name) }
                 StorageRoot(
                     treeUri = treeUri.toString(),
                     displayName = root.name ?: "已授权目录",
@@ -63,8 +63,9 @@ class SafPhotoStorage(
             runCatching {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
                 val parent = groupDirectory(requireWritableRoot(treeUri), groupName, create = false)
-                SafDirectoryBackend(resolver).children(parent.uri.toString())
-                    .filter { it.directory }.map { it.name }
+                val children = SafDirectoryBackend(resolver).children(parent.uri.toString())
+                check(children.none { it.directory && (it.partial || it.virtual) }) { "目录信息尚不完整，请稍后刷新" }
+                children.filter { it.directory }.map { it.name }
                     .sortedWith(String.CASE_INSENSITIVE_ORDER)
             }
         }
@@ -133,9 +134,7 @@ class SafPhotoStorage(
             runCatching {
                 require(hasPersistedAccess(treeUri)) { "目录授权已失效，请在设置中重新选择" }
                 val parent = groupDirectory(requireWritableRoot(treeUri), groupName, create = false)
-                val directory = parent.findFile(categoryName) ?: return@runCatching Unit
-                if (!directory.isDirectory) throw IOException("“$categoryName”不是分类目录，未执行删除")
-                if (!directory.delete()) throw IOException("分类文件夹及其中内容删除失败")
+                SafDirectoryBackend(resolver).deleteDirectoryNamed(parent.uri.toString(), categoryName)
             }
         }
 

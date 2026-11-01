@@ -39,46 +39,31 @@ class FolderGroupsUiDeviceTest {
     private val work = CategoryGroup("work", "测试测试测试测试测试", 1, 1)
     private val root = StorageRoot("content://fixture", "Fixture", 1)
 
-    @Test fun folderTabsSwitchVisibleCategoriesAndKeepManageActionsSeparate() {
+    @Test fun folderTabsSwitchVisibleCategoriesAndTruncateOnlyTheDisplayedLabel() {
         var selected by mutableStateOf(home.id)
-        var manageFolders = false
-        var manageCategories = false
         val categories = listOf(Category("home-photo", "生活照片", 0, true, 1),
             Category("work-photo", "实验记录", 0, true, 1, work.id, work.name))
-        compose.setContent {
-            MaterialTheme {
-                HomeScreen(AppUiStateMapper.create(categories, AppSettings(storageRoot = root,
-                    selectedGroupId = selected), emptyList(), false, null, listOf(home, work)),
-                    {}, {}, { manageCategories = true }, {}, {}, {}, {}, {},
-                    onSelectGroup = { selected = it }, onManageGroups = { manageFolders = true })
-            }
-        }
+        compose.setContent { MaterialTheme {
+            HomeScreen(AppUiStateMapper.create(categories, AppSettings(storageRoot=root, selectedGroupId=selected),
+                emptyList(),false,null,listOf(home,work)), {}, {}, onSettings={},onRetry={},onDiscardFailed={},
+                onSaveLegacyDocument={},onDiscardDocument={},onSelectGroup={selected=it})
+        } }
         compose.onNodeWithText("生活照片").assertExists()
-        compose.onNodeWithText("实验记录").assertDoesNotExist()
         compose.onNodeWithText("测试测试…").assertExists()
-        compose.onNodeWithText("选择一个分类").assertDoesNotExist()
-        compose.onNodeWithText(work.name).assertDoesNotExist()
         compose.onNodeWithContentDescription("切换到${work.name}").performClick()
         compose.onNodeWithText("实验记录").assertExists()
-        compose.onNodeWithText("生活照片").assertDoesNotExist()
-        compose.onNodeWithContentDescription("管理分类").performClick()
-        compose.onNodeWithContentDescription("管理文件夹").performClick()
-        compose.onNodeWithText("管理分类").assertDoesNotExist()
-        compose.onNodeWithText("管理文件夹").assertDoesNotExist()
-        compose.runOnIdle {
-            assertEquals(true, manageFolders)
-            assertEquals(true, manageCategories)
-        }
+        compose.onNodeWithContentDescription("管理分类").assertDoesNotExist()
+        compose.onNodeWithContentDescription("管理文件夹").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(work.id,selected) }
     }
 
     @Test fun homeGroupHasNoRenameOrDeleteControls() {
-        compose.setContent {
-            MaterialTheme { GroupManagementScreen(AppUiState(groups = listOf(home)), {}, { _, _ -> },
-                { _, _ -> }, { _, _, _ -> }, { _, _ -> }, {}) }
-        }
-        compose.onNodeWithContentDescription("常用的更多操作").assertDoesNotExist()
-        compose.onNodeWithContentDescription("常用上移").assertDoesNotExist()
-        compose.onNodeWithText("固定常用").assertExists()
+        compose.setContent { MaterialTheme {
+            HomeScreen(AppUiState(groups=listOf(home)), {}, {}, onSettings={},onRetry={},onDiscardFailed={},
+                onSaveLegacyDocument={},onDiscardDocument={})
+        } }
+        compose.onNodeWithContentDescription("常用的文件夹操作").assertDoesNotExist()
+        compose.onNodeWithContentDescription("新增文件夹").assertExists()
     }
 
     @Test fun lockedCategoryCannotOpenCameraButUnrelatedCategoryRemainsUsable() {
@@ -87,7 +72,7 @@ class FolderGroupsUiDeviceTest {
         var opened: String? = null
         compose.setContent {
             MaterialTheme { HomeScreen(AppUiState(categories = categories,
-                directoryLockedCategoryIds = setOf("moving")), { opened = it.id }, {}, {}, {}, {}, {}, {}, {}) }
+                directoryLockedCategoryIds = setOf("moving")), { opened = it.id }, {}, onSettings={},onRetry={},onDiscardFailed={},onSaveLegacyDocument={},onDiscardDocument={}) }
         }
         compose.onNodeWithContentDescription("拍摄常用/移动中").assertIsNotEnabled()
         compose.onNodeWithContentDescription("拍摄常用/可拍摄").performClick()

@@ -9,6 +9,7 @@ internal data class DragWorld(
     val blockedGroups: Set<String> = emptySet(),
     val busy: Boolean = false,
     val crossGroupEnabled: Boolean = true,
+    val deleteEnabled: Boolean = false,
 )
 internal data class DragSession(
     val source: DragRecord,
@@ -22,6 +23,7 @@ internal sealed interface ManagementDrop {
     data object Unchanged : ManagementDrop
     data class Reorder(val source: DragRecord, val originalIds: List<String>, val proposedIds: List<String>) : ManagementDrop
     data class Transfer(val source: DragRecord, val targetGroupId: String, val beforeId: String?) : ManagementDrop
+    data class Delete(val source: DragRecord) : ManagementDrop
 }
 
 /** Gesture transaction only: persistence is called by the screen after release. */
@@ -100,9 +102,10 @@ internal class ManagementDragController {
         return valid
     }
 
-    fun release(insideSection: Boolean): ManagementDrop {
+    fun release(insideSection: Boolean, overTrash: Boolean = false): ManagementDrop {
         val current = session
-        val result = if (current == null || !insideSection || !current.hasValidPlacement) ManagementDrop.Cancel
+        val result = if (current != null && overTrash && world?.deleteEnabled == true) ManagementDrop.Delete(current.source)
+        else if (current == null || !insideSection || !current.hasValidPlacement) ManagementDrop.Cancel
         else if (current.previewGroupId != current.source.partition.groupId) {
             ManagementDrop.Transfer(current.source, current.previewGroupId, current.beforeId)
         } else {
