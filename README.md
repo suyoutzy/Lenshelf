@@ -6,8 +6,8 @@ Lenshelf 是一款 Android 分类相机：用一级文件夹组织拍摄分类�
 
 设计初心为方便长期坚持记录，将非同类记录保存在不同文件夹中，免去整理的烦恼。
 
-- 当前开发版本：**0.9.0**（versionCode 39，尚未正式发布）
-- 正式版本下载：[Lenshelf v0.8.2](https://github.com/suyoutzy/Lenshelf/releases/tag/v0.8.2)
+- 当前版本：**0.9**（versionCode 39）
+- 正式版本下载：[Lenshelf v0.9](https://github.com/suyoutzy/Lenshelf/releases/tag/v0.9)
 - 系统要求：**Android 10（API 29）及以上**
 - 许可证：[Apache License 2.0](LICENSE)
 
@@ -36,7 +36,7 @@ Lenshelf 是一款 Android 分类相机：用一级文件夹组织拍摄分类�
 
 0.7 完全移除动图采集、设置、缓冲和合成模块；既有动图文件不删除、不改写，仍按 JPEG 图片统计。升级时，可读取的旧动图待保存 JPEG 以普通照片继续恢复。
 
-0.9.0 开发验证：139 项 JVM 单元测试通过，Debug／Release Lint 无错误，两种构建及设备测试 APK 编译通过。小米测试手机 128 项、模拟器 124 项检查通过；各有 1 项需要额外笔记本照片的可选检查跳过。覆盖首页管理、刷新、拖动、分页、水印、文档增强、保存恢复及实际照片／文档／有声录像；Room 8／9→10 迁移检查与原调试证书覆盖升级通过，原分类、文件夹、设置及媒体路径和哈希保留。真实纸张的主观增强效果和更多机型仍需体验；正式证书覆盖升级、人工 TalkBack 和 16 KiB 页大小设备运行尚未验收。历史结果见[版本记录](CHANGELOG.md)。
+0.9 发布前验证：139 项 JVM 单元测试通过，Debug／Release Lint 无错误，两种构建及设备测试 APK 编译通过。小米测试手机 128 项、模拟器 124 项检查通过；各有 1 项需要额外笔记本照片的可选检查跳过。覆盖首页管理、刷新、拖动、分页、水印、文档增强、保存恢复及实际照片／文档／有声录像；Room 8／9→10 迁移检查与原调试证书覆盖升级通过，原分类、文件夹、设置及媒体路径和哈希保留。真实纸张的主观增强效果和更多机型仍需体验；正式证书覆盖升级、人工 TalkBack 和 16 KiB 页大小设备运行尚未验收。历史结果见[版本记录](CHANGELOG.md)。
 
 ## 隐私与存储
 
@@ -74,7 +74,7 @@ Debug APK 输出到 `app/build/outputs/apk/debug/app-debug.apk`；`assembleRelea
 .\tools\build-release.ps1
 ```
 
-脚本使用仓库之外的 `Lenshelf/signing/lenshelf-release.p12`（位于当前用户的 LocalAppData）；首次运行且没有密钥时才交互式创建，以后沿用原密钥。输出为 `app/build/outputs/apk/release/Lenshelf-v0.9.0.apk`。密码由终端交互输入，不写入项目或脚本。务必将密钥文件和密码分别安全备份；以后的正式版必须使用同一密钥签名。同一 applicationId 但签名不同的 APK 无法覆盖安装；不要为解决签名冲突直接卸载而丢失应用内分类、授权和待处理材料。
+脚本使用仓库之外的 `Lenshelf/signing/lenshelf-release.p12`（位于当前用户的 LocalAppData）；首次运行且没有密钥时才交互式创建，以后沿用原密钥。输出为 `app/build/outputs/apk/release/Lenshelf-v0.9.apk`。密码由终端交互输入，不写入项目或脚本。务必将密钥文件和密码分别安全备份；以后的正式版必须使用同一密钥签名。同一 applicationId 但签名不同的 APK 无法覆盖安装；不要为解决签名冲突直接卸载而丢失应用内分类、授权和待处理材料。
 
 ### macOS / Linux
 
