@@ -89,6 +89,9 @@ class CameraController(
         }
     }
     private var documentGeometryChangedAtMs = 0L
+    private val zoomHandoff = com.example.photocategorycamera.domain.CameraZoomHandoff()
+    private var preparingVideoCancel: (() -> Unit)? = null
+    private var videoStartGeneration = 0
     private var observedPhotoZoom = 1f
     private var onDocumentOutline: (FloatArray?) -> Unit = {}
     private val documentLayoutRebind = Runnable {
@@ -273,6 +276,9 @@ class CameraController(
         cameraProvider.unbindAll()
         val boundCamera = cameraProvider.bindToLifecycle(owner, selector, useCaseGroup)
         camera = boundCamera
+        boundCamera.cameraInfo.zoomState.value?.let { zoom ->
+            boundCamera.cameraControl.setZoomRatio(zoomHandoff.request(zoomHandoff.requestedRatio, zoom.minZoomRatio, zoom.maxZoomRatio))
+        }
         val cameraManager = context.getSystemService(CameraManager::class.java)
         sensorTimestampRealtime = runCatching {
             val cameraId = cameraManager.cameraIdList.first { id ->
@@ -371,6 +377,8 @@ class CameraController(
         file: File,
         fileSizeLimitBytes: Long,
         callbacks: VideoRecordingCallbacks,
+        initialZoomRatio: Float = zoomHandoff.requestedRatio,
+        beforeStart: ((Result<Unit>) -> Unit) -> Unit = { it(Result.success(Unit)) },
     ) {
         if (documentMode) {
             callbacks.onError(file, "文档模式只支持静态拍摄")
@@ -387,6 +395,9 @@ class CameraController(
             callbacks.onError(file, "相机尚未就绪")
             return
         }
+        zoomAnimator?.cancel()
+        zoomHandoff.request(initialZoomRatio, Float.MIN_VALUE, Float.MAX_VALUE)
+        val startGeneration = ++videoStartGeneration
         standaloneVideoRunning = true
         standaloneVideoPaused = false
         standaloneCaptureRotation = targetRotation
@@ -438,7 +449,32 @@ class CameraController(
             callbacks.onError(file, error.message ?: "无法启用麦克风录像")
             return
         }
-        activeRecording = pendingRecording.start(ContextCompat.getMainExecutor(context)) { event ->
+        fun failPreparation(error: Throwable) {
+            if (startGeneration != videoStartGeneration) return
+            videoStartGeneration++
+            preparingVideoCancel = null
+            standaloneVideoRunning = false
+            restorePhotoModeAfterVideo()
+            callbacks.onError(file, error.message ?: "录像准备失败")
+        }
+        preparingVideoCancel = { failPreparation(IllegalStateException("录像准备已取消")) }
+        val boundCamera = checkNotNull(camera)
+        val zoom = checkNotNull(boundCamera.cameraInfo.zoomState.value)
+        zoomHandoff.restoreBefore(zoom.minZoomRatio, zoom.maxZoomRatio,
+            apply = { ratio, done ->
+                val future = boundCamera.cameraControl.setZoomRatio(ratio)
+                future.addListener({ done(runCatching { future.get(); Unit }) }, ContextCompat.getMainExecutor(context))
+            },
+            failed = ::failPreparation,
+            ready = zoomReady@{
+                if (released || !cameraEnabled || startGeneration != videoStartGeneration) return@zoomReady
+                beforeStart { result ->
+                    mainHandler.post startReady@{
+                        if (released || !cameraEnabled || startGeneration != videoStartGeneration) return@startReady
+                        if (result.isFailure) { failPreparation(result.exceptionOrNull()!!); return@startReady }
+                        try {
+                            preparingVideoCancel = null
+                            activeRecording = pendingRecording.start(ContextCompat.getMainExecutor(context)) { event ->
             when (event) {
                 is VideoRecordEvent.Start -> callbacks.onStarted(
                     currentVideoQualityLabel(),
@@ -474,8 +510,13 @@ class CameraController(
                         callbacks.onError(file, warning ?: "录像未生成有效文件")
                     }
                 }
-            }
-        }
+                            }
+                        }
+                        } catch (error: Exception) { failPreparation(error) }
+                    }
+                }
+            },
+        )
     }
 
     private fun bindStandaloneVideo(
@@ -625,7 +666,7 @@ class CameraController(
 
     fun stopVideo() {
         if (!standaloneVideoRunning) return
-        activeRecording?.stop()
+        if (activeRecording != null) activeRecording?.stop() else preparingVideoCancel?.invoke()
     }
 
     fun isVideoRunning(): Boolean = standaloneVideoRunning
@@ -662,6 +703,7 @@ class CameraController(
         if (available) {
             zoomAnimator?.cancel()
             lensFacing = newLens
+            zoomHandoff.request(1f, 1f, 1f)
             bindPhotoModeIfEnabled()
         }
         return available
@@ -732,13 +774,13 @@ class CameraController(
         val currentCamera = camera ?: return
         val zoom = currentCamera.cameraInfo.zoomState.value ?: return
         invalidateDocumentBoundary()
-        currentCamera.cameraControl.setZoomRatio(ratio.coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio))
+        currentCamera.cameraControl.setZoomRatio(zoomHandoff.request(ratio, zoom.minZoomRatio, zoom.maxZoomRatio))
     }
 
     fun animateZoomRatio(ratio: Float) {
         val currentCamera = camera ?: return
         val zoom = currentCamera.cameraInfo.zoomState.value ?: return
-        val target = ratio.coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio)
+        val target = zoomHandoff.request(ratio, zoom.minZoomRatio, zoom.maxZoomRatio)
         zoomAnimator?.cancel()
         zoomAnimator = ValueAnimator.ofFloat(zoom.zoomRatio, target).apply {
             duration = 260L
@@ -751,6 +793,11 @@ class CameraController(
         }
     }
 
+    fun freezeZoomForVideo(): Float {
+        zoomAnimator?.cancel()
+        return zoomHandoff.requestedRatio
+    }
+
     fun setTargetRotation(rotation: Int) {
         targetRotation = rotation
         if (standaloneVideoRunning) return
@@ -759,6 +806,8 @@ class CameraController(
     }
 
     fun release() {
+        preparingVideoCancel?.invoke()
+        videoStartGeneration++
         released = true
         previewView?.removeOnLayoutChangeListener(documentLayoutListener)
         stopAnalysis()

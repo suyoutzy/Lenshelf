@@ -327,11 +327,13 @@ internal fun CameraScreen(
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
+        val recordingZoom = controller.freezeZoomForVideo()
         viewModel.prepareVideo { preparation ->
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
             val beginRecording = {
                 controller.startVideo(
                     file = preparation.tempFile,
+                    initialZoomRatio = recordingZoom,
                     fileSizeLimitBytes = preparation.fileSizeLimitBytes,
                     callbacks = VideoRecordingCallbacks(
                         onStarted = viewModel::onVideoStarted,
