@@ -34,6 +34,7 @@ data class AppUiState(
     val hasPendingCapture: Boolean = false,
     val pendingCaptureCount: Int = 0,
     val awaitingNoteCount: Int = 0,
+    val videoProcessingPercent: Int? = null,
     val pendingCategoryName: String? = null,
     val failedCaptureCount: Int = 0,
     val failedCaptureError: String? = null,

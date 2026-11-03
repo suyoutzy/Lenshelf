@@ -21,13 +21,18 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import com.example.photocategorycamera.data.blocksCategory
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import com.example.photocategorycamera.domain.CaptureMode
 import com.example.photocategorycamera.data.DocumentReservation
 import com.example.photocategorycamera.domain.DocumentEffect
 import com.example.photocategorycamera.domain.DocumentQuad
 import java.io.File
-import kotlin.math.max
 
 enum class VideoRecordingPhase { IDLE, PREPARING, RECORDING, PAUSED, FINALIZING }
 
@@ -51,6 +56,7 @@ data class CameraUiState(
     val canRetry: Boolean = false,
     val pendingCaptureCount: Int = 0,
     val awaitingNoteCount: Int = 0,
+    val videoProcessingPercent: Int? = null,
     val failedCaptureCount: Int = 0,
     val failedCaptureError: String? = null,
     val video: VideoRecordingState = VideoRecordingState(),
@@ -80,10 +86,19 @@ class CameraViewModel(
     val state: StateFlow<CameraUiState> = mutableState.asStateFlow()
     private var frozenCategory: Category? = null
     private var latestDocumentId: String? = null
+    private var videoPreparationJob: Job? = null
+    private var recordingLease: com.example.photocategorycamera.video.VideoCodecCoordinator.RecordingLease? = null
     private var autoPromptGeneration = 0L
     private val autoPromptOwners = mutableMapOf<String,Long>()
     private val mutableAutoNotePrompts = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity=8)
     val autoNotePrompts = mutableAutoNotePrompts.asSharedFlow()
+
+    fun cancelPreparingVideo() { videoPreparationJob?.cancel() }
+    private fun releaseVideoLease() {
+        val lease = recordingLease
+        recordingLease = null
+        container.captureTasks.releaseRecording(lease)
+    }
 
     fun invalidateAutoPrompts() { autoPromptGeneration++; autoPromptOwners.clear() }
 
@@ -105,6 +120,11 @@ class CameraViewModel(
     }
 
     init {
+        viewModelScope.launch {
+            container.captureTasks.videoProgress.collectLatest { progress ->
+                mutableState.value = mutableState.value.copy(videoProcessingPercent=progress?.percent)
+            }
+        }
         viewModelScope.launch {
             container.initialization.await()
             combine(container.categories.categories, container.settings.settings, container.directoryOperations.pending) {
@@ -238,32 +258,41 @@ class CameraViewModel(
         val category = snapshot.category
         val root = snapshot.storageRoot
         if (snapshot.controlsLocked || snapshot.directoryLocked || snapshot.captureQueueFull || category == null || root == null) return false
-        val usable = appContext.filesDir.usableSpace
-        val reserve = max(MIN_CACHE_RESERVE_BYTES, usable / 10L)
-        val budget = usable - reserve
-        if (budget < MIN_VIDEO_BUDGET_BYTES) {
-            mutableState.value = snapshot.copy(message = "可用缓存空间不足，至少需要预留128 MiB用于录像")
-            return false
-        }
         frozenCategory = category
-        mutableState.value = snapshot.copy(
-            message = "正在准备录像…",
-            video = VideoRecordingState(phase = VideoRecordingPhase.PREPARING),
-        )
+        mutableState.value = snapshot.copy(message="正在准备录像…",video=VideoRecordingState(phase=VideoRecordingPhase.PREPARING))
         val promptGeneration = autoPromptGeneration
-        viewModelScope.launch {
-            container.captureTasks.reserve(category, root, MediaKind.VIDEO) {
-                createRecoveryFile("video_", ".mp4")
-            }.onSuccess { reservation ->
-                frozenCategory = reservation.category
-                if (reservation.autoPromptEligible && promptGeneration == autoPromptGeneration) autoPromptOwners[reservation.id] = promptGeneration
-                onPrepared(VideoPreparation(reservation.id, reservation.tempFile, budget, reservation.category.directoryLabel))
-            }.onFailure { error ->
-                clearFrozenVideoTarget()
-                mutableState.value = mutableState.value.copy(
-                    message = error.message ?: "无法建立录像任务",
-                    video = VideoRecordingState(),
-                )
+        videoPreparationJob = viewModelScope.launch {
+            var reservation: com.example.photocategorycamera.data.CaptureReservation? = null
+            var lease: com.example.photocategorycamera.video.VideoCodecCoordinator.RecordingLease? = null
+            var transferred = false
+            try {
+                val budget = container.captureTasks.videoCaptureBudget()
+                check(budget >= com.example.photocategorycamera.domain.CaptureSpaceBudget.MIN_VIDEO_BYTES) { "空间不足以录制并处理视频，请先处理已有素材" }
+                val accepted = container.captureTasks.reserve(category,root,MediaKind.VIDEO) {
+                    createRecoveryFile("video_", ".mp4")
+                }.getOrThrow()
+                reservation = accepted
+                lease = container.captureTasks.videoCodecs.acquireRecording()
+                currentCoroutineContext().ensureActive()
+                recordingLease = lease
+                transferred = true
+                frozenCategory = accepted.category
+                if (accepted.autoPromptEligible && promptGeneration == autoPromptGeneration) autoPromptOwners[accepted.id] = promptGeneration
+                onPrepared(VideoPreparation(accepted.id,accepted.tempFile,budget,accepted.category.directoryLabel))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (transferred) { releaseVideoLease(); transferred=false; lease=null }
+                reportMessage(error.message ?: "无法建立录像任务")
+            } finally {
+                if (!transferred) {
+                    reservation?.let { container.captureTasks.discardCapture(it.id,it.tempFile);autoPromptOwners.remove(it.id) }
+                    withContext(NonCancellable) { lease?.release() }
+                    container.captureTasks.resumeProcessing()
+                    clearFrozenVideoTarget()
+                    mutableState.value = mutableState.value.copy(video=VideoRecordingState())
+                }
+                if (videoPreparationJob === currentCoroutineContext()[Job]) videoPreparationJob = null
             }
         }
         return true
@@ -314,6 +343,7 @@ class CameraViewModel(
     }
 
     fun onVideoReady(taskId: String, tempFile: File, controllerWarning: String? = null) {
+        releaseVideoLease()
         val category = frozenCategory
         if (category == null) {
             onVideoFailed(taskId, tempFile, "录像目标分类不可用")
@@ -332,6 +362,7 @@ class CameraViewModel(
     }
 
     fun onVideoFailed(taskId: String, tempFile: File, error: String) {
+        releaseVideoLease()
         autoPromptOwners.remove(taskId)
         container.captureTasks.discardCapture(taskId, tempFile)
         mutableState.value = mutableState.value.copy(message = error, isSaving = false, video = VideoRecordingState())
@@ -394,9 +425,6 @@ class CameraViewModel(
     }
 
     companion object {
-        private const val MIB = 1024L * 1024L
-        private const val MIN_CACHE_RESERVE_BYTES = 256L * MIB
-        private const val MIN_VIDEO_BUDGET_BYTES = 128L * MIB
         private const val VIDEO_WARNING_NANOS = 570L * 1_000_000_000L
 
         fun factory(context: Context, categoryId: String, container: AppContainer) =

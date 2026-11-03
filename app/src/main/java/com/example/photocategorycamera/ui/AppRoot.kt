@@ -62,7 +62,9 @@ fun AppRoot(
     container: AppContainer,
     onChooseDirectory: () -> Unit,
 ) {
-    val state by appViewModel.state.collectAsStateWithLifecycle()
+    val appState by appViewModel.state.collectAsStateWithLifecycle()
+    val videoProgress by container.captureTasks.videoProgress.collectAsStateWithLifecycle()
+    val state = appState.copy(videoProcessingPercent=videoProgress?.percent)
     val notesViewModel: PendingAnnotationViewModel = viewModel(key="pending-annotations",
         factory=PendingAnnotationViewModel.factory(container.captureTasks))
     val noteState by notesViewModel.state.collectAsStateWithLifecycle()

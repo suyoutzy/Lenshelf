@@ -430,6 +430,8 @@ private fun LazyListScope.homeStatusItems(state: AppUiState,onMigrateHome: () ->
                                 )
                                 state.pendingCategoryLabels.ifEmpty { listOf(state.pendingCategoryName.orEmpty()) }
                                     .forEach { Text("目标分类：$it", style = MaterialTheme.typography.bodySmall) }
+                                if (state.awaitingNoteCount>0 && state.pendingCaptureCount>0) Text("待备注 ${state.awaitingNoteCount} 项",style=MaterialTheme.typography.bodySmall)
+                                state.videoProcessingPercent?.let { Text("正在处理视频 $it%",style=MaterialTheme.typography.bodySmall) }
                                 state.failedCaptureError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                             }
                             Column(horizontalAlignment = Alignment.End) {

@@ -14,6 +14,10 @@ import com.example.photocategorycamera.domain.StorageRoot
 import com.example.photocategorycamera.storage.MediaStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +33,8 @@ import com.example.photocategorycamera.photo.PhotoStampWriter
 import com.example.photocategorycamera.photo.PhotoDateStampProcessor
 import com.example.photocategorycamera.photo.ImageProcessingGate
 
+data class VideoProcessingProgress(val taskId: String, val percent: Int)
+
 data class CaptureReservation(val id: String, val tempFile: File, val category: Category, val autoPromptEligible: Boolean = false)
 
 class CaptureTaskRepository(
@@ -40,6 +46,8 @@ class CaptureTaskRepository(
     private val photoStamper: PhotoStampWriter = PhotoDateStampProcessor(),
     private val captureTimeMillis: () -> Long = System::currentTimeMillis,
     private val captureZone: () -> ZoneId = ZoneId::systemDefault,
+    private val videoStamper: com.example.photocategorycamera.video.VideoStampWriter = com.example.photocategorycamera.video.VideoStampProcessor(context),
+    val videoCodecs: com.example.photocategorycamera.video.VideoCodecCoordinator = com.example.photocategorycamera.video.VideoCodecCoordinator(),
 ) {
     private val dao = database.captureTaskDao()
     private val documentDao = database.documentDraftDao()
@@ -47,6 +55,27 @@ class CaptureTaskRepository(
     private val savingMutex = Mutex()
     val outstanding: Flow<List<CaptureTaskEntity>> = dao.observeOutstanding()
     val awaitingNotes: Flow<List<CaptureTaskEntity>> = dao.observeAwaitingNotes()
+    private val mutableVideoProgress = MutableStateFlow<VideoProcessingProgress?>(null)
+    val videoProgress = mutableVideoProgress.asStateFlow()
+
+    fun resumeProcessing() = scope.launch { initialization.await(); processReady() }
+
+    fun releaseRecording(lease: com.example.photocategorycamera.video.VideoCodecCoordinator.RecordingLease?) {
+        scope.launch {
+            lease?.release()
+            initialization.await()
+            processReady()
+        }
+    }
+
+    private suspend fun pendingOutputHeadroom(): Long = dao.getAll()
+        .filter { it.sourcePath != null && it.taskStage != CaptureTaskStage.FAILED }
+        .maxOfOrNull { File(checkNotNull(it.sourcePath)).length().coerceAtMost(Long.MAX_VALUE/3)*3 } ?: 0
+
+    suspend fun videoCaptureBudget(): Long = withContext(Dispatchers.IO) {
+        initialization.await()
+        com.example.photocategorycamera.domain.CaptureSpaceBudget.videoBudget(context.filesDir.usableSpace,pendingOutputHeadroom())
+    }
 
     private val initialization = scope.async {
         settings.migrateObsoleteCameraPreferences()
@@ -116,9 +145,16 @@ class CaptureTaskRepository(
             check(snapshot.storageRoot?.treeUri == root.treeUri) { "保存根目录已变化，请重新进入相机" }
             val latest = database.latestCaptureCategory(category.id)
             check(dao.countOutstanding() < MAX_OUTSTANDING) { "待处理任务已满，请等待保存完成" }
+            val free = context.filesDir.usableSpace
+            val headroom = pendingOutputHeadroom()
+            if (kind == MediaKind.PHOTO) check(com.example.photocategorycamera.domain.CaptureSpaceBudget.canAcceptPhoto(free,headroom)) {
+                "空间不足，请先处理已有素材或释放存储空间"
+            } else check(com.example.photocategorycamera.domain.CaptureSpaceBudget.videoBudget(free,headroom) >=
+                com.example.photocategorycamera.domain.CaptureSpaceBudget.MIN_VIDEO_BYTES) { "空间不足以录制并处理视频" }
             val now = captureTimeMillis()
-            val stamp = if (kind == MediaKind.PHOTO && snapshot.photoDateStampEnabled)
-                PhotoDateStamp.format(now, captureZone(), snapshot.photoDateStampFormat) else null
+            val zone = captureZone()
+            val stamp = if (kind == MediaKind.PHOTO && snapshot.timeStampEnabled)
+                PhotoDateStamp.format(now, zone, snapshot.timeStampFormat) else null
             val autoPrompt = snapshot.postCaptureNoteEnabled && dao.countUnconfirmedNotes() == 0
             val id = UUID.randomUUID().toString()
             val file = createTempFile()
@@ -141,7 +177,7 @@ class CaptureTaskRepository(
                     timeStampFormat = snapshot.timeStampFormat.name,
                     noteRequired = snapshot.postCaptureNoteEnabled,
                     stampVersion = 2,
-                    captureZoneId = if (kind == MediaKind.PHOTO) captureZone().id else null,
+                    captureZoneId = if (kind == MediaKind.PHOTO) zone.id else null,
                 ),
             )
             check(inserted != -1L) { "无法建立拍摄任务" }
@@ -242,6 +278,8 @@ class CaptureTaskRepository(
             task.sourcePath?.let { File(it).delete() }
             stampedOutput(task.id).delete()
             File(stampedOutput(task.id).path + ".part").delete()
+            stampedVideoOutput(task.id).delete()
+            File(stampedVideoOutput(task.id).path + ".part").delete()
             dao.delete(task.id)
             clearDocumentMaterials(task.id)
             CaptureEventLog.record(context, "failed_task_discarded", task.id)
@@ -267,8 +305,10 @@ class CaptureTaskRepository(
         while (true) {
             var task = dao.nextSavable()
             if (task == null) {
-                val photo = dao.nextPhotoProcessing() ?: break
-                processPhoto(photo)
+                val photo = dao.nextPhotoProcessing()
+                if (photo != null) { processPhoto(photo); continue }
+                val video = if (!videoCodecs.recordingReserved) dao.nextVideoProcessing() else null
+                if (video == null || !processVideo(video)) break
                 continue
             }
             val now = System.currentTimeMillis()
@@ -327,6 +367,37 @@ class CaptureTaskRepository(
     private fun stampedOutput(id: String): File = File(
         File(context.filesDir, "capture-recovery").apply { mkdirs() }, id + "_stamped.jpg",
     )
+
+    private fun stampedVideoOutput(id: String): File = File(
+        File(context.filesDir,"capture-recovery").apply { mkdirs() }, "${id}_stamped.mp4",
+    )
+
+    private suspend fun processVideo(task: CaptureTaskEntity): Boolean {
+        mutableVideoProgress.value = VideoProcessingProgress(task.id,0)
+        try {
+            videoCodecs.export {
+                ImageProcessingGate.mutex.withLock {
+                    val source = File(task.sourcePath ?: task.tempPath)
+                    val output = stampedVideoOutput(task.id)
+                    videoStamper.writeResult(source,task.stampRecipe,output) {
+                        mutableVideoProgress.value = VideoProcessingProgress(task.id,it)
+                    }
+                    dao.markVideoProcessed(task.id,output.path,System.currentTimeMillis())
+                }
+            }
+        } catch (_: com.example.photocategorycamera.video.VideoExportDeferredException) {
+            return false // Reservation is held; releasing the recorder explicitly resumes this worker.
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: com.example.photocategorycamera.video.InvalidVideoSourceException) {
+            dao.updateProgress(task.id,CaptureTaskStage.FAILED.name,task.targetUri,
+                error.message ?: "视频原件无法恢复",System.currentTimeMillis())
+        } catch (error: Exception) {
+            dao.updateProgress(task.id,CaptureTaskStage.VIDEO_RETRY.name,task.targetUri,
+                "视频处理失败，原片和备注已保留："+(error.message ?: "可重试"),System.currentTimeMillis())
+        } finally { mutableVideoProgress.value = null }
+        return true
+    }
 
     private suspend fun processPhoto(task: CaptureTaskEntity) {
         try {

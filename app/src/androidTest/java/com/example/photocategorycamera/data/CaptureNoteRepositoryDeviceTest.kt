@@ -113,6 +113,52 @@ class CaptureNoteRepositoryDeviceTest {
         assertEquals("2026-11-04 00:00", f.db.captureTaskDao().find(video.id)!!.photoDateStampText)
     }
 
+    @Test fun confirmedVideoUsesItsFrozenRecipeAndRetainsTheOriginalUntilSafVerification() = withFixture { f ->
+        f.settings.setTimeStampEnabled(true)
+        f.settings.setPostCaptureNoteEnabled(true)
+        val source = File(f.context.filesDir,"note-video.mp4")
+        val video = f.tasks.reserve(f.category,f.root,MediaKind.VIDEO) {
+            source.also { com.example.photocategorycamera.video.VideoStampFixture.write(it) }
+        }.getOrThrow()
+        f.tasks.markVideoStarted(video.id).getOrThrow()
+        val frozen = f.db.captureTaskDao().find(video.id)!!.photoDateStampText
+        val original = source.readBytes()
+        f.tasks.markReady(video.id,MediaKind.VIDEO)
+        f.awaitStage(video.id,CaptureTaskStage.AWAITING_NOTE)
+        f.settings.setTimeStampEnabled(false)
+        f.settings.setPostCaptureNoteEnabled(false)
+        f.tasks.confirmAnnotation(video.id,"录制后填写的备注").getOrThrow()
+        val ready = f.awaitStage(video.id,CaptureTaskStage.RETRY)
+        assertEquals(frozen,ready.photoDateStampText)
+        assertEquals("录制后填写的备注",ready.noteText)
+        assertNotEquals(source.path,ready.tempPath)
+        assertArrayEquals(original,source.readBytes())
+        f.storage.allowSave.set(true)
+        f.tasks.retryAll()
+        withTimeout(15000) { while(f.db.captureTaskDao().find(video.id)!=null) delay(20) }
+        assertFalse(source.exists());assertFalse(File(ready.tempPath).exists())
+    }
+
+    @Test fun queuedVideoWaitsWhileARecordingOwnsTheCodecAndResumesWhenItIsReleased() = withFixture { f ->
+        f.settings.setTimeStampEnabled(true)
+        val source=File(f.context.filesDir,"held-video.mp4")
+        val video=f.tasks.reserve(f.category,f.root,MediaKind.VIDEO) {
+            source.also { com.example.photocategorycamera.video.VideoStampFixture.write(it) }
+        }.getOrThrow()
+        f.tasks.markVideoStarted(video.id).getOrThrow()
+        val lease=f.tasks.videoCodecs.acquireRecording()
+        try {
+            f.tasks.markReady(video.id,MediaKind.VIDEO)
+            f.awaitStage(video.id,CaptureTaskStage.VIDEO_PROCESSING)
+            f.tasks.resumeProcessing().join()
+            assertEquals(0,f.storage.writes)
+            assertEquals(source.path,f.db.captureTaskDao().find(video.id)!!.tempPath)
+        } finally { lease.release() }
+        f.tasks.resumeProcessing().join()
+        f.awaitStage(video.id,CaptureTaskStage.RETRY)
+        assertTrue(source.exists())
+    }
+
     private class Fixture(val context: Context, val db: AppDatabase, val scope: CoroutineScope, val settings: SettingsRepository) {
         val storage = RetryStorage()
         var clock = System.currentTimeMillis()
@@ -129,7 +175,7 @@ class CaptureNoteRepositoryDeviceTest {
                 }
             }
         }.getOrThrow()
-        suspend fun awaitStage(id: String, stage: CaptureTaskStage) = withTimeout(10000) {
+        suspend fun awaitStage(id: String, stage: CaptureTaskStage) = withTimeout(30000) {
             tasks.outstanding.first { list -> list.any { it.id == id && it.taskStage == stage } }.single { it.id == id }
         }
     }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.photocategorycamera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 39
-        versionName = "0.9"
+        versionCode = 40
+        versionName = "0.9.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -40,6 +40,9 @@ android {
 }
 
 dependencies {
+    implementation("androidx.media3:media3-transformer:1.8.1")
+    implementation("androidx.media3:media3-effect:1.8.1")
+    implementation("androidx.media3:media3-common:1.8.1")
     implementation("org.opencv:opencv:4.13.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")

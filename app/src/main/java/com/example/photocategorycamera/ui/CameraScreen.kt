@@ -265,12 +265,13 @@ internal fun CameraScreen(
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
         onDispose { orientationListener.disable() }
     }
-    DisposableEffect(controller) { onDispose { viewModel.invalidateAutoPrompts(); viewModel.dismissDocumentPreview(); controller.release() } }
+    DisposableEffect(controller) { onDispose { viewModel.invalidateAutoPrompts(); viewModel.cancelPreparingVideo(); viewModel.dismissDocumentPreview(); controller.release() } }
     DisposableEffect(lifecycleOwner, controller, state.captureMode) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
                     viewModel.invalidateAutoPrompts()
+                    viewModel.cancelPreparingVideo()
                     viewModel.dismissDocumentPreview()
                     if (controller.isVideoRunning()) {
                         viewModel.markVideoFinalizing()
@@ -349,6 +350,7 @@ internal fun CameraScreen(
             val beginRecording = {
                 controller.startVideo(
                     file = preparation.tempFile,
+                    taskId = preparation.taskId,
                     initialZoomRatio = recordingZoom,
                     beforeStart = { complete -> viewModel.persistVideoStart(preparation.taskId, complete) },
                     fileSizeLimitBytes = preparation.fileSizeLimitBytes,
@@ -913,10 +915,13 @@ internal fun CameraScreen(
                 }
                 if (state.pendingCaptureCount > 0) {
                     Text(
-                        "待处理 ${state.pendingCaptureCount}/8",
+                        "处理／保存 ${state.pendingCaptureCount}/8",
                         color = if (state.captureQueueFull) Color(0xFFFFD34E) else Color.White.copy(alpha = 0.72f),
                         style = MaterialTheme.typography.labelSmall,
                     )
+                }
+                state.videoProcessingPercent?.let { percent ->
+                    Text("正在处理视频 $percent%",color=Color.White.copy(alpha=.8f),style=MaterialTheme.typography.labelSmall)
                 }
                 if (state.failedCaptureCount > 0) {
                     Text(

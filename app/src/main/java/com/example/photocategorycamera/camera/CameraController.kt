@@ -36,6 +36,7 @@ import androidx.camera.core.ZoomState
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.view.PreviewView
 import androidx.camera.video.FileOutputOptions
@@ -123,6 +124,9 @@ class CameraController(
     private var standaloneVideoPaused = false
     private var standaloneLensSwitching = false
     private var standaloneCaptureRotation = Surface.ROTATION_0
+    private var videoMetadataGeneration = 0
+    @Volatile private var lastVideoZoomRatio: Float? = null
+    @Volatile private var lastVideoSensorTimestamp: Long? = null
     private var cameraEnabled = true
     private var sensorTimestampRealtime = false
     private val ordinaryCaptures = ArrayDeque<OrdinaryCapture>()
@@ -379,6 +383,7 @@ class CameraController(
         callbacks: VideoRecordingCallbacks,
         initialZoomRatio: Float = zoomHandoff.requestedRatio,
         beforeStart: ((Result<Unit>) -> Unit) -> Unit = { it(Result.success(Unit)) },
+        taskId: String? = null,
     ) {
         if (documentMode) {
             callbacks.onError(file, "文档模式只支持静态拍摄")
@@ -468,6 +473,9 @@ class CameraController(
             failed = ::failPreparation,
             ready = zoomReady@{
                 if (released || !cameraEnabled || startGeneration != videoStartGeneration) return@zoomReady
+                CaptureEventLog.record(context,"video_zoom_applied",taskId,values=mapOf(
+                    "requestedZoom" to initialZoomRatio,"appliedZoom" to zoomHandoff.requestedRatio,
+                    "captureResultZoom" to lastVideoZoomRatio,"sensorTimestampNs" to lastVideoSensorTimestamp))
                 beforeStart { result ->
                     mainHandler.post startReady@{
                         if (released || !cameraEnabled || startGeneration != videoStartGeneration) return@startReady
@@ -476,11 +484,12 @@ class CameraController(
                             preparingVideoCancel = null
                             activeRecording = pendingRecording.start(ContextCompat.getMainExecutor(context)) { event ->
             when (event) {
-                is VideoRecordEvent.Start -> callbacks.onStarted(
-                    currentVideoQualityLabel(),
-                    actualStatus,
-                    stabilizationWarning,
-                )
+                is VideoRecordEvent.Start -> {
+                    CaptureEventLog.record(context,"video_started",taskId,values=mapOf(
+                        "appliedZoom" to zoomHandoff.requestedRatio,"captureResultZoom" to lastVideoZoomRatio,
+                        "sensorTimestampNs" to lastVideoSensorTimestamp))
+                    callbacks.onStarted(currentVideoQualityLabel(),actualStatus,stabilizationWarning)
+                }
                 is VideoRecordEvent.Status -> callbacks.onStatus(event.recordingStats.recordedDurationNanos)
                 is VideoRecordEvent.Pause -> {
                     standaloneVideoPaused = true
@@ -527,6 +536,14 @@ class CameraController(
         stabilizationEnabled: Boolean = false,
     ) {
         stopAnalysis()
+        val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+        val metadataGeneration = ++videoMetadataGeneration
+        lastVideoZoomRatio=null;lastVideoSensorTimestamp=null
+        val sensorWidth = runCatching {
+            val id=Camera2CameraInfo.from(cameraProvider.getCameraInfo(selector)).cameraId
+            context.getSystemService(CameraManager::class.java).getCameraCharacteristics(id)
+                .get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.width() ?: 0
+        }.getOrDefault(0)
         val previewSelector = ResolutionSelector.Builder()
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .build()
@@ -535,6 +552,15 @@ class CameraController(
             .setTargetRotation(Surface.ROTATION_0)
             .setTargetFrameRate(VIDEO_FRAME_RATE)
             .setPreviewStabilizationEnabled(stabilizationEnabled)
+            .also { builder -> Camera2Interop.Extender(builder).setSessionCaptureCallback(object: CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                    if (metadataGeneration != videoMetadataGeneration) return
+                    val nativeRatio=if (android.os.Build.VERSION.SDK_INT>=30) result.get(CaptureResult.CONTROL_ZOOM_RATIO) else null
+                    val cropWidth=result.get(CaptureResult.SCALER_CROP_REGION)?.width() ?: 0
+                    lastVideoZoomRatio=nativeRatio ?: if (sensorWidth>0 && cropWidth>0) sensorWidth.toFloat()/cropWidth else null
+                    lastVideoSensorTimestamp=result.get(CaptureResult.SENSOR_TIMESTAMP)
+                }
+            }) }
             .build()
             .also { it.surfaceProvider = view.surfaceProvider }
         val capture = if (reuseVideoCapture) {
@@ -554,7 +580,6 @@ class CameraController(
                 .also { videoCapture = it }
         }
         imageCapture = null
-        val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
         observedZoomState?.removeObservers(owner)
         observedZoomState = null
         cameraProvider.unbindAll()
