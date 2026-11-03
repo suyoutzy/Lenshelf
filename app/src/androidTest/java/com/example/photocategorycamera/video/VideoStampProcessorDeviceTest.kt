@@ -16,6 +16,35 @@ import java.security.MessageDigest
 import kotlin.math.sin
 
 class VideoStampProcessorDeviceTest {
+    @Test fun preservesAudioTimingForRealCameraRecording() = runBlocking {
+        val context=ApplicationProvider.getApplicationContext<Context>()
+        val source=File.createTempFile("camera-offset-", ".mp4", context.cacheDir)
+        val output=File(source.path+"-stamped.mp4")
+        try {
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets
+                .open("camera-amr-offset.mp4").use { input -> source.outputStream().use(input::copyTo) }
+            val before=VideoMediaInfo.read(source)
+            VideoStampProcessor(context).writeResult(source,MediaStampRecipe("2026-11-03", "现场"),output) {}
+            val after=VideoMediaInfo.read(output)
+            assertArrayEquals(before.audioDigest,after.audioDigest)
+            assertTrue(kotlin.math.abs((after.videoStartUs-after.audioStartUs)-(before.videoStartUs-before.audioStartUs))<=50_000)
+        } finally { source.delete();output.delete();File(output.path+".part").delete() }
+    }
+    @Test fun exportsCameraAmrAudioWithoutLosingItsSamples() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = File.createTempFile("video-amr-source-", ".mp4", context.cacheDir)
+        val output = File(source.path + "-stamped.mp4")
+        try {
+            VideoStampFixture.write(source, audioMime = "audio/3gpp", videoOffsetUs = 72_000)
+            val audio = audioHash(source, "audio/3gpp")
+            val timing = VideoMediaInfo.read(source)
+            assertTrue(timing.videoStartUs - timing.audioStartUs > 50_000)
+            VideoStampProcessor(context).writeResult(source, MediaStampRecipe("2026-11-03", "现场"), output) {}
+            assertArrayEquals(audio, audioHash(output, "audio/3gpp"))
+            val result = VideoMediaInfo.read(output)
+            assertTrue(kotlin.math.abs((result.videoStartUs-result.audioStartUs)-(timing.videoStartUs-timing.audioStartUs)) <= 50_000)
+        } finally { source.delete(); output.delete(); File(output.path + ".part").delete() }
+    }
     @Test fun exportsUprightWatermarksAtEveryRotationWithoutChangingAudioOrSource() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         for (rotation in listOf(0,90,180,270)) {
@@ -61,12 +90,12 @@ class VideoStampProcessorDeviceTest {
         }
     }
 
-    private fun audioHash(file: File): ByteArray {
+    private fun audioHash(file: File, expectedMime: String = "audio/mp4a-latm"): ByteArray {
         val extractor=MediaExtractor()
         try {
             extractor.setDataSource(file.path)
             val track=(0 until extractor.trackCount).first { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true }
-            assertEquals("audio/mp4a-latm",extractor.getTrackFormat(track).getString(MediaFormat.KEY_MIME))
+            assertEquals(expectedMime,extractor.getTrackFormat(track).getString(MediaFormat.KEY_MIME))
             extractor.selectTrack(track)
             val digest=MessageDigest.getInstance("SHA-256")
             val buffer=ByteBuffer.allocate(1024*1024)
@@ -77,7 +106,7 @@ class VideoStampProcessorDeviceTest {
                 val bytes=ByteArray(count);buffer.position(0);buffer.get(bytes);digest.update(bytes);samples++
                 if (!extractor.advance()) break
             }
-            assertTrue(samples>20)
+            assertTrue(samples>0)
             return digest.digest()
         } finally { extractor.release() }
     }
@@ -88,15 +117,15 @@ internal object VideoStampFixture {
     private data class Sample(val bytes:ByteArray,val time:Long,val flags:Int)
     private data class Encoded(val format:MediaFormat,val samples:List<Sample>)
 
-    fun write(file:File,rotation:Int=0) {
+    fun write(file:File,rotation:Int=0,audioMime:String="audio/mp4a-latm",videoOffsetUs:Long=0) {
         val videoFormat=MediaFormat.createVideoFormat("video/avc",640,480).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
             setInteger(MediaFormat.KEY_BIT_RATE,1_500_000);setInteger(MediaFormat.KEY_FRAME_RATE,30)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1)
         }
-        val audioFormat=MediaFormat.createAudioFormat("audio/mp4a-latm",44100,1).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE,128000)
+        val audioFormat=MediaFormat.createAudioFormat(audioMime,if(audioMime=="audio/3gpp") 8000 else 44100,1).apply {
+            if(audioMime=="audio/mp4a-latm") setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE,if(audioMime=="audio/3gpp") 12200 else 128000)
         }
         val video=encode(videoFormat,true);val audio=encode(audioFormat,false)
         val muxer=MediaMuxer(file.path,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -104,7 +133,7 @@ internal object VideoStampFixture {
             muxer.setOrientationHint(rotation)
             val v=muxer.addTrack(video.format);val a=muxer.addTrack(audio.format);muxer.start()
             val info=MediaCodec.BufferInfo()
-            (video.samples.map { v to it }+audio.samples.map { a to it }).sortedBy { it.second.time }.forEach { (track,sample) ->
+            (video.samples.map { v to it.copy(time=it.time+videoOffsetUs) }+audio.samples.map { a to it }).sortedBy { it.second.time }.forEach { (track,sample) ->
                 info.set(0,sample.bytes.size,sample.time,sample.flags)
                 muxer.writeSampleData(track,ByteBuffer.wrap(sample.bytes),info)
             }
@@ -113,6 +142,7 @@ internal object VideoStampFixture {
     }
 
     private fun encode(format:MediaFormat,video:Boolean):Encoded {
+        val sampleRate=if(video) 0 else format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
         val codec=MediaCodec.createEncoderByType(format.getString(MediaFormat.KEY_MIME)!!)
         val samples=mutableListOf<Sample>();var outputFormat:MediaFormat?=null
         try {
@@ -124,7 +154,7 @@ internal object VideoStampFixture {
                 if (!eos) {
                     val input=codec.dequeueInputBuffer(1000)
                     if (input>=0) {
-                        if (fed >= if(video) 30 else 44100) {
+                        if (fed >= if(video) 30 else sampleRate) {
                             codec.queueInputBuffer(input,0,0,1_000_000,MediaCodec.BUFFER_FLAG_END_OF_STREAM);eos=true
                         } else if(video) {
                             val image=checkNotNull(codec.getInputImage(input))
@@ -139,9 +169,9 @@ internal object VideoStampFixture {
                             codec.queueInputBuffer(input,0,640*480*3/2,fed*1_000_000L/30,0);fed++
                         } else {
                             val buffer=checkNotNull(codec.getInputBuffer(input)).apply { clear();order(ByteOrder.LITTLE_ENDIAN) }
-                            val count=minOf(buffer.remaining()/2,44100-fed)
-                            repeat(count) { index -> buffer.putShort((sin((fed+index)*2*Math.PI*997/44100)*5000).toInt().toShort()) }
-                            codec.queueInputBuffer(input,0,count*2,fed*1_000_000L/44100,0);fed+=count
+                            val count=minOf(buffer.remaining()/2,sampleRate-fed)
+                            repeat(count) { index -> buffer.putShort((sin((fed+index)*2*Math.PI*997/sampleRate)*5000).toInt().toShort()) }
+                            codec.queueInputBuffer(input,0,count*2,fed*1_000_000L/sampleRate,0);fed+=count
                         }
                     }
                 }

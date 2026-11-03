@@ -74,10 +74,12 @@ private data class NotePreview(val bitmap: Bitmap, val durationMs: Long? = null)
 @Composable
 private fun NoteMediaPreview(task: CaptureTaskEntity, draft: String) {
     // Decode once per item, not once per keystroke. Published preview copies are reclaimed by GC.
-    val preview by produceState<NotePreview?>(null, task.id, task.sourcePath ?: task.tempPath) {
-        value = withContext(Dispatchers.IO) {
+    val path = task.sourcePath ?: task.tempPath
+    var preview by remember(task.id, path) { mutableStateOf<NotePreview?>(null) }
+    LaunchedEffect(task.id, path) {
+        preview = withContext(Dispatchers.IO) {
             runCatching {
-                val source = File(task.sourcePath ?: task.tempPath)
+                val source = File(path)
                 if (task.kind == MediaKind.PHOTO) NotePreview(DocumentProcessor().loadUpright(source, 720))
                 else {
                     val retriever = MediaMetadataRetriever()

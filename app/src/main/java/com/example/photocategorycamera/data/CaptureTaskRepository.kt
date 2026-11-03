@@ -280,6 +280,7 @@ class CaptureTaskRepository(
             File(stampedOutput(task.id).path + ".part").delete()
             stampedVideoOutput(task.id).delete()
             File(stampedVideoOutput(task.id).path + ".part").delete()
+            File(stampedVideoOutput(task.id).path + ".aligned.part").delete()
             dao.delete(task.id)
             clearDocumentMaterials(task.id)
             CaptureEventLog.record(context, "failed_task_discarded", task.id)
