@@ -3,10 +3,7 @@ package com.example.photocategorycamera.photo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Matrix
-import android.graphics.Paint
-import android.graphics.Typeface
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
 import java.io.FileOutputStream
@@ -23,7 +20,7 @@ fun interface PhotoStampWriter {
 class PhotoDateStampProcessor : PhotoStampWriter {
     override fun writeResult(source: File, text: String, output: File) {
         require(source.canonicalFile != output.canonicalFile)
-        require(text.matches(Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{2}:[0-9]{2})?")))
+        require(text.isNotBlank())
         if (!source.isFile || source.length() <= 2) throw InvalidPhotoSourceException("照片原图不存在或不完整")
         RandomAccessFile(source, "r").use {
             it.seek(it.length() - 2)
@@ -54,22 +51,9 @@ class PhotoDateStampProcessor : PhotoStampWriter {
             val inverse = Matrix().also { check(transform.invert(it)) }
             val width = if (orientation >= 5) h else w
             val height = if (orientation >= 5) w else h
-            val edge = minOf(width, height)
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                textSize = edge * .025f
-                textAlign = Paint.Align.RIGHT
-                strokeJoin = Paint.Join.ROUND
-                strokeWidth = maxOf(1f, edge * .001f)
-            }
             val canvas = Canvas(bitmap)
             canvas.concat(inverse)
-            val x = width - edge * .03f
-            val y = height - edge * .03f - paint.fontMetrics.descent
-            paint.style = Paint.Style.STROKE; paint.color = Color.BLACK
-            canvas.drawText(text, x, y, paint)
-            paint.style = Paint.Style.FILL; paint.color = Color.WHITE
-            canvas.drawText(text, x, y, paint)
+            MediaStampRenderer.draw(canvas, width, height, text)
             output.parentFile?.let { check(it.isDirectory || it.mkdirs()) }
             FileOutputStream(part).use {
                 check(bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it)) { "无法写入日期水印" }

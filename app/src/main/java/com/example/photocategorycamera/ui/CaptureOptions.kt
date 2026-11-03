@@ -9,7 +9,7 @@ import com.example.photocategorycamera.domain.PhotoDateStampFormat
 @Composable
 internal fun PhotoDateStampSettings(enabled: Boolean, format: PhotoDateStampFormat,
     onEnabledChange: (Boolean) -> Unit, onFormatChange: (PhotoDateStampFormat) -> Unit) {
-    DropdownMenuItem(text = { Text("日期水印") },
+    DropdownMenuItem(text = { Text("时间水印") },
         trailingIcon = { Switch(checked = enabled, onCheckedChange = null) },
         onClick = { onEnabledChange(!enabled) })
     if (enabled) PhotoDateStampFormat.entries.forEach { choice ->
@@ -34,4 +34,11 @@ internal fun DocumentEffectSelector(effect: DocumentEffect, enabled: Boolean, on
             }
         }
     }
+}
+
+@Composable
+internal fun PostCaptureNoteSettings(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    DropdownMenuItem(text = { Text("拍后备注") },
+        trailingIcon = { Switch(checked=enabled,onCheckedChange=null) },
+        onClick = { onChange(!enabled) })
 }

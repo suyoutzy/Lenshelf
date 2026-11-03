@@ -25,6 +25,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -109,6 +110,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.photocategorycamera.camera.CameraController
 import com.example.photocategorycamera.camera.VideoRecordingCallbacks
@@ -141,6 +144,10 @@ internal fun CameraScreen(
     photoDateStampFormat: com.example.photocategorycamera.domain.PhotoDateStampFormat = com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE,
     onPhotoDateStampEnabledChanged: (Boolean) -> Unit = {},
     onPhotoDateStampFormatChanged: (com.example.photocategorycamera.domain.PhotoDateStampFormat) -> Unit = {},
+    postCaptureNoteEnabled: Boolean = false,
+    onPostCaptureNoteEnabledChanged: (Boolean) -> Unit = {},
+    noteEditorVisible: Boolean = false,
+    onOpenPendingNotes: (String?) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -258,11 +265,12 @@ internal fun CameraScreen(
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
         onDispose { orientationListener.disable() }
     }
-    DisposableEffect(controller) { onDispose { viewModel.dismissDocumentPreview(); controller.release() } }
+    DisposableEffect(controller) { onDispose { viewModel.invalidateAutoPrompts(); viewModel.dismissDocumentPreview(); controller.release() } }
     DisposableEffect(lifecycleOwner, controller, state.captureMode) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    viewModel.invalidateAutoPrompts()
                     viewModel.dismissDocumentPreview()
                     if (controller.isVideoRunning()) {
                         viewModel.markVideoFinalizing()
@@ -279,6 +287,14 @@ internal fun CameraScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val canAutoPrompt by rememberUpdatedState(!categoryMenu && !settingsMenu && !noteEditorVisible && !state.video.isActive && state.captureMode == CaptureMode.PHOTO)
+    val openNotes by rememberUpdatedState(onOpenPendingNotes)
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.autoNotePrompts.collect { id -> if (canAutoPrompt) openNotes(id) }
+        }
+    }
+
     fun stopVideoAndMaybeLeave(leave: Boolean = false) {
         if (leave) leaveAfterVideo = true
         viewModel.markVideoFinalizing()
@@ -286,7 +302,7 @@ internal fun CameraScreen(
     }
 
     fun capturePhoto() {
-        if (state.directoryLocked) return
+        if (state.directoryLocked || noteEditorVisible) return
         if (state.captureMode == CaptureMode.DOCUMENT) {
             viewModel.beginDocumentCapture { reservation ->
                 val boundary = controller.freezeDocumentBoundary()
@@ -306,7 +322,7 @@ internal fun CameraScreen(
     }
 
     val hardwareShutter by rememberUpdatedState<() -> Unit> {
-        if (!categoryMenu && !settingsMenu) {
+        if (!categoryMenu && !settingsMenu && !noteEditorVisible) {
             when (state.video.phase) {
                 VideoRecordingPhase.RECORDING, VideoRecordingPhase.PAUSED -> stopVideoAndMaybeLeave()
                 VideoRecordingPhase.IDLE -> capturePhoto()
@@ -321,7 +337,7 @@ internal fun CameraScreen(
     }
 
     fun startVideoFromLongPress() {
-        if (state.directoryLocked) return
+        if (state.directoryLocked || noteEditorVisible) return
         if (state.captureMode == CaptureMode.DOCUMENT) return
         if (!audioPermissionGranted) {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -334,6 +350,7 @@ internal fun CameraScreen(
                 controller.startVideo(
                     file = preparation.tempFile,
                     initialZoomRatio = recordingZoom,
+                    beforeStart = { complete -> viewModel.persistVideoStart(preparation.taskId, complete) },
                     fileSizeLimitBytes = preparation.fileSizeLimitBytes,
                     callbacks = VideoRecordingCallbacks(
                         onStarted = viewModel::onVideoStarted,
@@ -456,6 +473,7 @@ internal fun CameraScreen(
                         if (state.captureMode == CaptureMode.PHOTO) {
                             PhotoDateStampSettings(photoDateStampEnabled, photoDateStampFormat,
                                 onPhotoDateStampEnabledChanged, onPhotoDateStampFormatChanged)
+                            PostCaptureNoteSettings(postCaptureNoteEnabled, onPostCaptureNoteEnabledChanged)
                         }
                         if (state.captureMode == CaptureMode.DOCUMENT) {
                             DocumentEffect.entries.forEach { effect ->
@@ -680,6 +698,20 @@ internal fun CameraScreen(
                                 },
                                 modifier = Modifier.fillMaxSize().padding(vertical = 8.dp),
                             )
+                        }
+                    }
+                }
+
+                if (state.awaitingNoteCount > 0 && state.captureMode == CaptureMode.PHOTO && !state.video.isActive) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(end=12.dp,bottom=72.dp)
+                            .clickable(enabled=!noteEditorVisible) { onOpenPendingNotes(null) },
+                        shape = RoundedCornerShape(16.dp), color = Color.Black.copy(alpha=.42f),
+                    ) {
+                        Row(Modifier.defaultMinSize(minHeight=48.dp).padding(horizontal=12.dp,vertical=8.dp),
+                            verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Outlined.EditNote,"填写待处理备注",tint=Color.White,modifier=Modifier.size(22.dp))
+                            Text("待处理 ${state.awaitingNoteCount}",color=Color.White,style=MaterialTheme.typography.labelMedium)
                         }
                     }
                 }

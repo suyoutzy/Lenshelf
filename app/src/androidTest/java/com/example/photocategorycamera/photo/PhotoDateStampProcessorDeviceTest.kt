@@ -62,4 +62,37 @@ class PhotoDateStampProcessorDeviceTest {
             } finally { source.delete(); output.delete() }
         }
     }
+    @Test fun noteAndTimeRenderTogetherAboveTheBottomMarginForAllExifTransforms() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (orientation in 1..8) {
+            val source = File.createTempFile("note-source-", ".jpg", context.cacheDir)
+            val output = File(source.path + "-note.jpg")
+            val bitmap = Bitmap.createBitmap(800,600,Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(Color.rgb(24,40,64))
+            source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG,100,it) }
+            bitmap.recycle()
+            ExifInterface(source).apply { setAttribute(ExifInterface.TAG_ORIENTATION,orientation.toString()); saveAttributes() }
+            val original = source.readBytes()
+            try {
+                PhotoDateStampProcessor().writeResult(source, "设备已检查\n2026-11-03 10:00", output)
+                assertArrayEquals(original,source.readBytes())
+                val upright = DocumentProcessor().loadUpright(output,1000)
+                try {
+                    var notePixels = 0
+                    var timePixels = 0
+                    for (y in 0 until upright.height) for (x in 0 until upright.width) {
+                        val color = upright.getPixel(x,y)
+                        if (Color.red(color)>150 && Color.green(color)>150 && Color.blue(color)>150) {
+                            assertTrue(x > upright.width*.02f)
+                            assertTrue(y > upright.height*.80f)
+                            if (y < upright.height*.94f) notePixels++ else timePixels++
+                        }
+                    }
+                    assertTrue("note missing for EXIF $orientation",notePixels>20)
+                    assertTrue("time missing for EXIF $orientation",timePixels>20)
+                } finally { upright.recycle() }
+            } finally { source.delete(); output.delete() }
+        }
+    }
+
 }

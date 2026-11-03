@@ -20,6 +20,16 @@ class AppUiStateMapperTest {
     private val root = StorageRoot("content://root", "Lenshelf", 1L)
     private val category = Category("category-1", "学习", 0, true, 1L)
 
+    @Test fun awaitingNotesHaveTheirOwnGlobalCountAndStillLockTheirFrozenCategories() {
+        val task = CaptureTaskEntity("note", "source.jpg", category.id, category.name, root.treeUri,
+            "PHOTO", "AWAITING_NOTE", createdAt=1,updatedAt=1,noteRequired=true)
+        val state = AppUiStateMapper.create(listOf(category),AppSettings(storageRoot=root),listOf(task),false,null)
+        assertEquals(1,state.awaitingNoteCount)
+        assertEquals(0,state.pendingCaptureCount)
+        assertTrue(state.isCategoryMutationLocked(category))
+        assertFalse(state.canRetryCapture)
+    }
+
     @Test fun `legacy home waits for migration without blocking rename conflict resolution`() {
         val legacy = category.copy(groupName = null)
         val fresh = category.copy(id = "fresh")

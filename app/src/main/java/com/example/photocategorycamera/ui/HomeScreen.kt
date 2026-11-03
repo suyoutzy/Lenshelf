@@ -121,6 +121,7 @@ internal fun HomeScreen(
     onReorderGroups: (List<String>, List<String>, (Boolean) -> Unit) -> Unit = { _, _, done -> done(false) },
     onMoveGroup: (CategoryGroup, Int) -> Unit = { _, _ -> },
     onLoadGroupCounts: (String) -> Unit = {},
+    onOpenPendingNotes: () -> Unit = {},
 ) {
     var confirmDiscardFailed by rememberSaveable { mutableStateOf(false) }
     var confirmDiscardDocument by rememberSaveable { mutableStateOf(false) }
@@ -295,7 +296,7 @@ internal fun HomeScreen(
                     .testTag(if (active) "category-list" else "category-list-${group.id}"),state = list,
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     homeStatusItems(displayState,onMigrateHome,onRetryDirectoryOperation,onSaveLegacyDocument,
-                        { confirmDiscardDocument = true },onRetry,{ confirmDiscardFailed = true })
+                        { confirmDiscardDocument = true },onRetry,{ confirmDiscardFailed = true },onOpenPendingNotes)
                     item(key = "head") { Box(Modifier.fillMaxWidth().height(4.dp).let {
                         if (active) it.dragDropArea(drag,"drop-head-${group.id}-true",partition,ids.firstOrNull { it != drag.displaySession?.source?.id }) else it
                     }) }
@@ -376,7 +377,7 @@ private fun HomeCategoryCard(category: Category, count: Int?, directoryLocked: B
 
 private fun LazyListScope.homeStatusItems(state: AppUiState,onMigrateHome: () -> Unit,
     onRetryDirectoryOperation: (String) -> Unit,onSaveLegacyDocument: (String) -> Unit,
-    onRequestDiscardDocument: () -> Unit,onRetry: () -> Unit,onRequestDiscardFailed: () -> Unit) {
+    onRequestDiscardDocument: () -> Unit,onRetry: () -> Unit,onRequestDiscardFailed: () -> Unit,onOpenPendingNotes: () -> Unit) {
             if (state.homeMigrationLabels.isNotEmpty() && state.directoryOperations.isEmpty()) {
                 item(key = "home-migration") {
                     Card(Modifier.fillMaxWidth()) {
@@ -408,7 +409,9 @@ private fun LazyListScope.homeStatusItems(state: AppUiState,onMigrateHome: () ->
             }
             if (state.hasPendingCapture) {
                 item {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Card(colors = CardDefaults.cardColors(containerColor =
+                        if (state.pendingCaptureCount>0 || state.failedCaptureCount>0) MaterialTheme.colorScheme.errorContainer
+                        else MaterialTheme.colorScheme.secondaryContainer)) {
                         Row(
                             Modifier.fillMaxWidth().padding(16.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -417,6 +420,7 @@ private fun LazyListScope.homeStatusItems(state: AppUiState,onMigrateHome: () ->
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     when {
+                                        state.awaitingNoteCount > 0 && state.pendingCaptureCount == 0 && state.failedCaptureCount == 0 -> "待备注 ${state.awaitingNoteCount} 项"
                                         state.pendingCaptureCount > 0 && state.failedCaptureCount > 0 ->
                                             "${state.pendingCaptureCount} 个任务待保存，${state.failedCaptureCount} 个无法恢复"
                                         state.failedCaptureCount > 0 -> "有 ${state.failedCaptureCount} 个媒体任务无法恢复"
@@ -429,6 +433,9 @@ private fun LazyListScope.homeStatusItems(state: AppUiState,onMigrateHome: () ->
                                 state.failedCaptureError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                             }
                             Column(horizontalAlignment = Alignment.End) {
+                                if (state.awaitingNoteCount > 0) {
+                                    TextButton(onClick=onOpenPendingNotes) { Text("填写备注") }
+                                }
                                 if (state.canRetryCapture) {
                                     TextButton(onClick = onRetry) { Icon(Icons.Default.Refresh, null); Text("重试") }
                                 }

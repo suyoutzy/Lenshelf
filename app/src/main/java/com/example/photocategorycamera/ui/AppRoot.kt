@@ -23,6 +23,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,6 +63,18 @@ fun AppRoot(
     onChooseDirectory: () -> Unit,
 ) {
     val state by appViewModel.state.collectAsStateWithLifecycle()
+    val notesViewModel: PendingAnnotationViewModel = viewModel(key="pending-annotations",
+        factory=PendingAnnotationViewModel.factory(container.captureTasks))
+    val noteState by notesViewModel.state.collectAsStateWithLifecycle()
+    val rootLifecycle = LocalLifecycleOwner.current
+    DisposableEffect(rootLifecycle,notesViewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) notesViewModel.onBackground()
+            if (event == Lifecycle.Event.ON_START) notesViewModel.onForeground()
+        }
+        rootLifecycle.lifecycle.addObserver(observer)
+        onDispose { rootLifecycle.lifecycle.removeObserver(observer) }
+    }
     val snackbar = remember { SnackbarHostState() }
     val folderFeedback = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -133,6 +147,7 @@ fun AppRoot(
                             onReorderGroups = appViewModel::reorderGroups,
                             onMoveGroup = appViewModel::moveGroup,
                             onLoadGroupCounts = appViewModel::loadGroupFileCounts,
+                            onOpenPendingNotes = { notesViewModel.open() },
                         )
                     }
                     composable(SETTINGS) {
@@ -170,6 +185,10 @@ fun AppRoot(
                                     }
                                 }
                             },
+                            noteEditorVisible = noteState.visible,
+                            onOpenPendingNotes = { notesViewModel.open(it) },
+                            postCaptureNoteEnabled = state.postCaptureNoteEnabled,
+                            onPostCaptureNoteEnabledChanged = appViewModel::setPostCaptureNoteEnabled,
                             photoDateStampEnabled = state.photoDateStampEnabled,
                             photoDateStampFormat = state.photoDateStampFormat,
                             onPhotoDateStampEnabledChanged = appViewModel::setPhotoDateStampEnabled,
@@ -202,6 +221,8 @@ fun AppRoot(
                 contentAlignment = Alignment.Center,
             ) { CircularProgressIndicator() }
         }
+        PendingAnnotationSheet(noteState, notesViewModel::changeDraft, notesViewModel::collapse, notesViewModel::save)
+
     }
 }
 

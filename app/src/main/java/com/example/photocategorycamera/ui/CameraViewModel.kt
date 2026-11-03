@@ -14,6 +14,7 @@ import com.example.photocategorycamera.domain.VideoStabilizationStatus
 import com.example.photocategorycamera.diagnostics.CaptureEventLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
@@ -49,6 +50,7 @@ data class CameraUiState(
     val message: String? = null,
     val canRetry: Boolean = false,
     val pendingCaptureCount: Int = 0,
+    val awaitingNoteCount: Int = 0,
     val failedCaptureCount: Int = 0,
     val failedCaptureError: String? = null,
     val video: VideoRecordingState = VideoRecordingState(),
@@ -78,6 +80,29 @@ class CameraViewModel(
     val state: StateFlow<CameraUiState> = mutableState.asStateFlow()
     private var frozenCategory: Category? = null
     private var latestDocumentId: String? = null
+    private var autoPromptGeneration = 0L
+    private val autoPromptOwners = mutableMapOf<String,Long>()
+    private val mutableAutoNotePrompts = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity=8)
+    val autoNotePrompts = mutableAutoNotePrompts.asSharedFlow()
+
+    fun invalidateAutoPrompts() { autoPromptGeneration++; autoPromptOwners.clear() }
+
+    fun persistVideoStart(id: String, complete: (Result<Unit>) -> Unit) {
+        viewModelScope.launch { complete(container.captureTasks.markVideoStarted(id)) }
+    }
+
+    private fun completeAndMaybePrompt(id: String, kind: MediaKind, warning: String? = null) {
+        viewModelScope.launch {
+            val owner = autoPromptOwners.remove(id)
+            container.captureTasks.completeCapture(id,kind).onSuccess { task ->
+                val waiting = task?.taskStage == com.example.photocategorycamera.data.CaptureTaskStage.AWAITING_NOTE
+                mutableState.value = mutableState.value.copy(message =
+                    (if (waiting) "已拍摄，加入待处理备注" else "已拍摄，正在后台保存") +
+                        (warning?.let { "；$it" } ?: ""))
+                if (waiting && owner == autoPromptGeneration) mutableAutoNotePrompts.tryEmit(id)
+            }.onFailure { reportMessage(it.message ?: "拍摄材料已保留，请重试") }
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -111,6 +136,7 @@ class CameraViewModel(
                 )
                 mutableState.value = mutableState.value.copy(
                     pendingCaptureCount = activeTaskCount,
+                    awaitingNoteCount = tasks.count { it.taskStage == com.example.photocategorycamera.data.CaptureTaskStage.AWAITING_NOTE },
                     failedCaptureCount = failedTasks.size,
                     failedCaptureError = failedTasks.firstOrNull()?.error,
                     canRetry = tasks.any { it.taskStage.isRetryable },
@@ -193,9 +219,13 @@ class CameraViewModel(
             )
             return false
         }
+        val promptGeneration = autoPromptGeneration
         viewModelScope.launch {
             val result = container.captureTasks.reserve(category, root, MediaKind.PHOTO) { createTempFile() }
-            result.onSuccess(onReserved).onFailure { error ->
+            result.onSuccess { reservation ->
+                if (reservation.autoPromptEligible && promptGeneration == autoPromptGeneration) autoPromptOwners[reservation.id] = promptGeneration
+                onReserved(reservation)
+            }.onFailure { error ->
                 mutableState.value = mutableState.value.copy(message = error.message ?: "无法建立拍摄任务")
             }
         }
@@ -220,11 +250,13 @@ class CameraViewModel(
             message = "正在准备录像…",
             video = VideoRecordingState(phase = VideoRecordingPhase.PREPARING),
         )
+        val promptGeneration = autoPromptGeneration
         viewModelScope.launch {
             container.captureTasks.reserve(category, root, MediaKind.VIDEO) {
                 createRecoveryFile("video_", ".mp4")
             }.onSuccess { reservation ->
                 frozenCategory = reservation.category
+                if (reservation.autoPromptEligible && promptGeneration == autoPromptGeneration) autoPromptOwners[reservation.id] = promptGeneration
                 onPrepared(VideoPreparation(reservation.id, reservation.tempFile, budget, reservation.category.directoryLabel))
             }.onFailure { error ->
                 clearFrozenVideoTarget()
@@ -295,11 +327,12 @@ class CameraViewModel(
             },
             video = VideoRecordingState(),
         )
-        container.captureTasks.markReady(taskId, MediaKind.VIDEO)
+        completeAndMaybePrompt(taskId, MediaKind.VIDEO, controllerWarning)
         clearFrozenVideoTarget()
     }
 
     fun onVideoFailed(taskId: String, tempFile: File, error: String) {
+        autoPromptOwners.remove(taskId)
         container.captureTasks.discardCapture(taskId, tempFile)
         mutableState.value = mutableState.value.copy(message = error, isSaving = false, video = VideoRecordingState())
         clearFrozenVideoTarget()
@@ -312,18 +345,19 @@ class CameraViewModel(
             return
         }
         val target = snapshot.activeCategories.firstOrNull { it.id == newCategoryId } ?: return
+        invalidateAutoPrompts()
         latestDocumentId = null
         mutableState.value = snapshot.copy(category = target, message = null, documentDisplay = null)
     }
 
     fun onCaptureFailed(taskId: String, tempFile: File, error: String) {
+        autoPromptOwners.remove(taskId)
         container.captureTasks.discardCapture(taskId, tempFile)
         mutableState.value = mutableState.value.copy(message = error)
     }
 
     fun saveCapturedPhoto(taskId: String) {
-        container.captureTasks.markReady(taskId, MediaKind.PHOTO)
-        mutableState.value = mutableState.value.copy(message = "已拍摄，正在后台保存")
+        completeAndMaybePrompt(taskId, MediaKind.PHOTO)
     }
 
     fun retry() {

@@ -233,6 +233,10 @@ class AppViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch { container.initialization.await(); container.settings.setPhotoDateStampFormat(format) }
     }
 
+    fun setPostCaptureNoteEnabled(enabled: Boolean) {
+        viewModelScope.launch { container.initialization.await(); container.settings.setPostCaptureNoteEnabled(enabled) }
+    }
+
     fun setCameraGridEnabled(enabled: Boolean) {
         viewModelScope.launch { container.initialization.await(); container.settings.setCameraGridEnabled(enabled) }
     }

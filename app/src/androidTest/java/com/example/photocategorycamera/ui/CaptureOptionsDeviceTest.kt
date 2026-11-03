@@ -37,9 +37,48 @@ class CaptureOptionsDeviceTest {
                 }
             }
         }
-        compose.onNodeWithText("日期水印").performClick()
+        compose.onNodeWithText("时间水印").performClick()
         compose.onNodeWithText("日期和时分").performClick()
         compose.runOnIdle { assertTrue(enabled); assertEquals(PhotoDateStampFormat.DATE_TIME, format) }
+    }
+
+    @Test fun postCaptureNotesCanBeEnabledWhileTheTimeStampStaysOff() {
+        var enabled = false
+        compose.setContent {
+            var notes by remember { mutableStateOf(false) }
+            MaterialTheme {
+                androidx.compose.foundation.layout.Column {
+                    PhotoDateStampSettings(false, PhotoDateStampFormat.DATE, {}, {})
+                    PostCaptureNoteSettings(notes) { notes = it; enabled = it }
+                }
+            }
+        }
+        compose.onNodeWithText("拍后备注").performClick()
+        compose.runOnIdle { assertTrue(enabled) }
+        compose.onNodeWithText("日期和时分").assertDoesNotExist()
+    }
+
+    @Test fun noteSheetHasOneInputAndCollapseAndSaveAreExplicit() {
+        var collapsed = false
+        var saved = false
+        val task = com.example.photocategorycamera.data.CaptureTaskEntity("one","missing.jpg","cat","设备",
+            "content://root","PHOTO","AWAITING_NOTE",createdAt=1,updatedAt=1,noteRequired=true)
+        compose.setContent {
+            var state by remember { mutableStateOf(PendingAnnotationUiState(task=task,total=3)) }
+            MaterialTheme {
+                PendingAnnotationSheet(state,
+                    onDraftChange={ state = state.copy(draft=it) },
+                    onCollapse={ collapsed=true }, onSave={ saved=true })
+            }
+        }
+        compose.onAllNodes(hasSetTextAction()).assertCountEquals(1)
+        compose.onNodeWithTag("note-input").performTextInput("设备已检查")
+        compose.onNodeWithTag("note-input").assertTextContains("设备已检查")
+        compose.onNodeWithText("1 / 3").assertIsDisplayed()
+        compose.onNodeWithText("收起").performClick()
+        compose.runOnIdle { assertTrue(collapsed); assertFalse(saved) }
+        compose.onNodeWithText("保存").performClick()
+        compose.runOnIdle { assertTrue(saved) }
     }
 
     @Test fun documentEffectIsVisibleAndSelectionReflectsTheSharedValue() {
