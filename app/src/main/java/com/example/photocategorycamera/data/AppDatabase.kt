@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [CategoryEntity::class, CategoryGroupEntity::class, CaptureTaskEntity::class, DocumentDraftEntity::class, DirectoryOperationEntity::class],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -18,6 +18,19 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun documentDraftDao(): DocumentDraftDao
 
     companion object {
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN timeStampEnabled INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN timeStampFormat TEXT NOT NULL DEFAULT 'DATE'")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN noteRequired INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN noteDraft TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN noteText TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN stampVersion INTEGER NOT NULL DEFAULT 1")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN captureZoneId TEXT DEFAULT NULL")
+                database.execSQL("ALTER TABLE capture_tasks ADD COLUMN recordingStartedAt INTEGER DEFAULT NULL")
+            }
+        }
+
         val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 val orders = mutableListOf<Pair<String, Int>>()

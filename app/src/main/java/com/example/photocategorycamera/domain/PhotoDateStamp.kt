@@ -5,9 +5,11 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class PhotoDateStampFormat(val label: String) {
+enum class TimeStampFormat(val label: String) {
     DATE("仅日期"), DATE_TIME("日期和时分"),
 }
+
+typealias PhotoDateStampFormat = TimeStampFormat
 
 /** The resulting text is persisted at reservation, never formatted again during saving. */
 object PhotoDateStamp {

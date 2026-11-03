@@ -16,8 +16,11 @@ class AppDatabaseMigrationTest {
     @Test fun migrate9To10RestoresInactiveCategoriesAfterActiveOnesAndPreservesFrozenRecipes() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         context.deleteDatabase(name)
-        val initial = Room.databaseBuilder(context, AppDatabase::class.java, name).build()
-        initial.openHelper.writableDatabase.apply {
+        val initial = context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null)
+        initial.apply {
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets
+                .open("room-v10.sql").bufferedReader().use { it.readLines() }
+                .filter { it.isNotBlank() }.forEach { execSQL(it.removeSuffix(";")) }
             execSQL("INSERT INTO category_groups VALUES ('home','常用',-1,0)")
             execSQL("INSERT INTO category_groups VALUES ('custom','课程',0,1)")
             execSQL("INSERT INTO categories VALUES ('hidden-a','旧停用',0,0,1,'home',0)")
@@ -30,7 +33,7 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_9_10).build()
+            .addMigrations(AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             val db = migrated.openHelper.readableDatabase
             db.query("SELECT id,sortOrder,isActive FROM categories WHERE groupId='home' ORDER BY sortOrder").use {
@@ -74,6 +77,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
                 AppDatabase.MIGRATION_9_10,
+                AppDatabase.MIGRATION_10_11,
             ).build()
         try {
             val cursor = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -113,6 +117,7 @@ class AppDatabaseMigrationTest {
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
                 AppDatabase.MIGRATION_9_10,
+                AppDatabase.MIGRATION_10_11,
             ).build()
         try {
             val categories = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM categories WHERE id = 'one'")
@@ -141,7 +146,7 @@ class AppDatabaseMigrationTest {
             close()
         }
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
+            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             database.openHelper.readableDatabase.query("SELECT mediaKind, tempPath, rootTreeUri, targetUri, stage FROM capture_tasks WHERE id = 'legacy'").use {
                 assertEquals(true, it.moveToFirst())
@@ -174,7 +179,7 @@ class AppDatabaseMigrationTest {
             close()
         }
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
+            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             val db = database.openHelper.writableDatabase
             db.query("SELECT name, sortOrder, isActive, createdAt, groupId FROM categories WHERE id='one'").use {
@@ -224,7 +229,7 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
+            .addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             val db = migrated.openHelper.writableDatabase
             db.query("SELECT name FROM category_groups WHERE id='home'").use {
@@ -260,10 +265,10 @@ class AppDatabaseMigrationTest {
         }
         initial.close()
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             val db = migrated.openHelper.writableDatabase
-            db.query("PRAGMA user_version").use { assertEquals(true, it.moveToFirst()); assertEquals(10, it.getInt(0)) }
+            db.query("PRAGMA user_version").use { assertEquals(true, it.moveToFirst()); assertEquals(11, it.getInt(0)) }
             db.query("SELECT id,kind,categoryId,sourceGroupId,targetGroupId,rootTreeUri,sourceGroupName,targetGroupName,sourceName,targetName,stateJson,stage,error,createdAt,updatedAt,slot,targetBeforeCategoryId FROM directory_operations ORDER BY id DESC").use {
                 assertEquals(true, it.moveToFirst())
                 assertEquals(listOf("native", "TRANSFER_CATEGORY", "cat", "home", "trip", "content://root", null, "旅行", "笔记", "笔记", "journal:native", "FILESYSTEM_DONE", null, "11", "12", "1", null),
@@ -295,7 +300,7 @@ class AppDatabaseMigrationTest {
             execSQL("PRAGMA user_version = 8")
         }
         initial.close()
-        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11).build()
         try {
             migrated.openHelper.readableDatabase.query("SELECT tempPath,targetUri,photoDateStampText,sourcePath,stage FROM capture_tasks").use {
                 assertTrue(it.moveToFirst()); assertEquals("source.jpg", it.getString(0)); assertEquals("content://frozen-target", it.getString(1))
@@ -306,6 +311,33 @@ class AppDatabaseMigrationTest {
                 assertEquals(1, it.getInt(2)); assertEquals("EDITING", it.getString(3))
             }
         } finally { migrated.close() }
+    }
+
+    @Test fun migrate10To11PreservesFrozenPhotoAndVideoWithoutEnablingNewFeatures() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.deleteDatabase(name)
+        context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { db ->
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().context.assets
+                .open("room-v10.sql").bufferedReader().use { it.readLines() }
+                .filter { it.isNotBlank() }.forEach { db.execSQL(it.removeSuffix(";")) }
+            db.execSQL("INSERT INTO category_groups VALUES ('home','常用',-1,0)")
+            db.execSQL("INSERT INTO categories VALUES ('cat','设备',0,1,1,'home',0)")
+            db.execSQL("INSERT INTO capture_tasks (id,tempPath,categoryId,categoryName,rootTreeUri,mediaKind,stage,targetUri,createdAt,updatedAt,photoDateStampText,sourcePath) VALUES ('photo','processed.jpg','cat','设备','content://original','PHOTO','RETRY','content://target',11,12,'2026-11-01 10:00','original.jpg')")
+            db.execSQL("INSERT INTO capture_tasks (id,tempPath,categoryId,categoryName,rootTreeUri,mediaKind,stage,createdAt,updatedAt) VALUES ('video','original.mp4','cat','设备','content://original','VIDEO','CAPTURING',13,14)")
+            db.execSQL("PRAGMA user_version = 10")
+        }
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
+            .addMigrations(AppDatabase.MIGRATION_10_11).build()
+        try {
+            db.openHelper.readableDatabase.query("SELECT id,tempPath,sourcePath,photoDateStampText,stage,targetUri,noteRequired,noteDraft,stampVersion,timeStampEnabled FROM capture_tasks ORDER BY createdAt").use {
+                assertTrue(it.moveToFirst())
+                assertEquals("photo",it.getString(0)); assertEquals("processed.jpg",it.getString(1)); assertEquals("original.jpg",it.getString(2))
+                assertEquals("2026-11-01 10:00",it.getString(3)); assertEquals("RETRY",it.getString(4)); assertEquals("content://target",it.getString(5))
+                assertEquals(0,it.getInt(6)); assertEquals("",it.getString(7)); assertEquals(1,it.getInt(8)); assertEquals(0,it.getInt(9))
+                assertTrue(it.moveToNext()); assertEquals("video",it.getString(0)); assertEquals("original.mp4",it.getString(1)); assertTrue(it.isNull(3))
+                assertEquals("CAPTURING",it.getString(4)); assertEquals(0,it.getInt(6)); assertEquals(1,it.getInt(8)); assertEquals(0,it.getInt(9))
+            }
+        } finally { db.close() }
     }
 
     private fun createLegacyMediaTables(db: androidx.sqlite.db.SupportSQLiteDatabase) {

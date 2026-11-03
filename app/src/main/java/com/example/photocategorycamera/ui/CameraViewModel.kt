@@ -99,7 +99,7 @@ class CameraViewModel(
                 val failedTasks = tasks.filter {
                     it.taskStage == com.example.photocategorycamera.data.CaptureTaskStage.FAILED
                 }
-                val activeTaskCount = tasks.size - failedTasks.size
+                val activeTaskCount = tasks.count { it.taskStage.occupiesActiveSlot }
                 CaptureEventLog.record(
                     appContext,
                     "queue_state",

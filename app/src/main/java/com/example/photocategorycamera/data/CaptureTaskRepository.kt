@@ -29,7 +29,7 @@ import com.example.photocategorycamera.photo.PhotoStampWriter
 import com.example.photocategorycamera.photo.PhotoDateStampProcessor
 import com.example.photocategorycamera.photo.ImageProcessingGate
 
-data class CaptureReservation(val id: String, val tempFile: File, val category: Category)
+data class CaptureReservation(val id: String, val tempFile: File, val category: Category, val autoPromptEligible: Boolean = false)
 
 class CaptureTaskRepository(
     private val context: Context,
@@ -46,6 +46,7 @@ class CaptureTaskRepository(
     private val reservationMutex = Mutex()
     private val savingMutex = Mutex()
     val outstanding: Flow<List<CaptureTaskEntity>> = dao.observeOutstanding()
+    val awaitingNotes: Flow<List<CaptureTaskEntity>> = dao.observeAwaitingNotes()
 
     private val initialization = scope.async {
         settings.migrateObsoleteCameraPreferences()
@@ -118,6 +119,7 @@ class CaptureTaskRepository(
             val now = captureTimeMillis()
             val stamp = if (kind == MediaKind.PHOTO && snapshot.photoDateStampEnabled)
                 PhotoDateStamp.format(now, captureZone(), snapshot.photoDateStampFormat) else null
+            val autoPrompt = snapshot.postCaptureNoteEnabled && dao.countUnconfirmedNotes() == 0
             val id = UUID.randomUUID().toString()
             val file = createTempFile()
             val inserted = dao.insert(
@@ -134,7 +136,12 @@ class CaptureTaskRepository(
                     groupId = latest.groupId,
                     groupName = latest.groupName,
                     photoDateStampText = stamp,
-                    sourcePath = if (stamp != null) file.absolutePath else null,
+                    sourcePath = if (snapshot.timeStampEnabled || snapshot.postCaptureNoteEnabled) file.absolutePath else null,
+                    timeStampEnabled = snapshot.timeStampEnabled,
+                    timeStampFormat = snapshot.timeStampFormat.name,
+                    noteRequired = snapshot.postCaptureNoteEnabled,
+                    stampVersion = 2,
+                    captureZoneId = if (kind == MediaKind.PHOTO) captureZone().id else null,
                 ),
             )
             check(inserted != -1L) { "无法建立拍摄任务" }
@@ -144,20 +151,72 @@ class CaptureTaskRepository(
                 id,
                 values = mapOf("categoryId" to category.id, "categoryName" to category.name, "mediaKind" to kind.name),
             )
-            CaptureReservation(id, file, latest)
+            CaptureReservation(id, file, latest, autoPrompt)
         } }
     }
 
-    fun markReady(id: String, kind: MediaKind) {
-        scope.launch {
-            initialization.await()
-            val task = dao.find(id) ?: return@launch
-            if (task.kind != kind) return@launch
-            dao.completeCapture(id, if (task.photoDateStampText != null) CaptureTaskStage.PHOTO_PROCESSING.name
-                else CaptureTaskStage.READY.name, System.currentTimeMillis())
-            CaptureEventLog.record(context, "task_ready", id, values = mapOf("mediaKind" to kind.name))
-            processReady()
+    private fun processingStage(task: CaptureTaskEntity): CaptureTaskStage = when {
+        !task.stampRecipe.hasContent -> CaptureTaskStage.READY
+        task.kind == MediaKind.VIDEO -> CaptureTaskStage.VIDEO_PROCESSING
+        else -> CaptureTaskStage.PHOTO_PROCESSING
+    }
+
+    suspend fun markVideoStarted(id: String): Result<Unit> = runCatching {
+        initialization.await()
+        reservationMutex.withLock { database.withTransaction {
+            val task = checkNotNull(dao.find(id)) { "录像任务已不存在" }
+            check(task.kind == MediaKind.VIDEO && task.taskStage == CaptureTaskStage.CAPTURING) { "录像任务状态已变化" }
+            if (task.recordingStartedAt == null) {
+                val now = captureTimeMillis()
+                val zone = captureZone()
+                val format = com.example.photocategorycamera.domain.TimeStampFormat.valueOf(task.timeStampFormat)
+                dao.markVideoStarted(id, if (task.timeStampEnabled) PhotoDateStamp.format(now, zone, format) else null, now, zone.id)
+            }
+        } }
+    }
+
+    suspend fun completeCapture(id: String, kind: MediaKind): Result<CaptureTaskEntity?> = runCatching {
+        initialization.await()
+        val ready = reservationMutex.withLock { database.withTransaction {
+            val task = dao.find(id) ?: return@withTransaction null
+            check(task.kind == kind) { "拍摄类型不一致" }
+            if (task.taskStage == CaptureTaskStage.CAPTURING) {
+                val stage = if (task.noteRequired) CaptureTaskStage.AWAITING_NOTE else processingStage(task)
+                dao.completeCapture(id, stage.name, System.currentTimeMillis())
+            }
+            dao.find(id)
+        } }
+        scope.launch { processReady() }
+        ready
+    }
+
+    fun markReady(id: String, kind: MediaKind) { scope.launch { completeCapture(id, kind) } }
+
+    suspend fun updateAnnotationDraft(id: String, text: String): Result<Unit> = runCatching {
+        initialization.await()
+        com.example.photocategorycamera.domain.PostCaptureNote.validate(text).getOrThrow()
+        reservationMutex.withLock {
+            check(dao.updateNoteDraft(id, text, System.currentTimeMillis()) == 1) { "该素材已进入保存，请刷新待处理列表" }
         }
+    }
+
+    suspend fun confirmAnnotation(id: String, text: String): Result<Unit> = runCatching {
+        initialization.await()
+        com.example.photocategorycamera.domain.PostCaptureNote.validate(text).getOrThrow()
+        // Flush first, even if admission to the bounded processing queue will fail.
+        reservationMutex.withLock {
+            dao.updateNoteDraft(id, text, System.currentTimeMillis())
+            database.withTransaction {
+                val task = dao.find(id) ?: return@withTransaction // Already archived: idempotent confirmation.
+                check(task.noteRequired) { "该素材没有待填写备注" }
+                check(task.taskStage != CaptureTaskStage.CAPTURING && task.taskStage != CaptureTaskStage.FAILED) { "该素材尚未就绪或已无法恢复" }
+                if (task.taskStage != CaptureTaskStage.AWAITING_NOTE) return@withTransaction
+                check(dao.countOutstanding() < MAX_OUTSTANDING) { "保存队列已满，备注已保留，请稍后保存" }
+                val confirmed = task.copy(noteText = text.trim())
+                dao.confirmNote(id, confirmed.noteText, processingStage(confirmed).name, System.currentTimeMillis())
+            }
+        }
+        scope.launch { processReady() }
     }
 
     fun discardCapture(id: String, tempFile: File) {
@@ -273,7 +332,7 @@ class CaptureTaskRepository(
         try {
             ImageProcessingGate.mutex.withLock {
                 val source = File(checkNotNull(task.sourcePath) { "水印原图路径缺失" })
-                val text = checkNotNull(task.photoDateStampText) { "拍摄日期缺失" }
+                val text = task.stampRecipe.text.also { check(it.isNotBlank()) { "水印配方缺失" } }
                 val output = stampedOutput(task.id)
                 photoStamper.writeResult(source, text, output)
                 dao.markPhotoProcessed(task.id, output.absolutePath, System.currentTimeMillis())
@@ -317,8 +376,8 @@ class CaptureTaskRepository(
                     MediaKind.PHOTO -> if (isRecoverableJpeg(file)) MediaKind.PHOTO else null
                 }
                 if (recoveredKind != null) {
-                    dao.completeCapture(task.id, if (task.photoDateStampText != null)
-                        CaptureTaskStage.PHOTO_PROCESSING.name else CaptureTaskStage.READY.name, System.currentTimeMillis())
+                    dao.completeCapture(task.id, if (task.noteRequired) CaptureTaskStage.AWAITING_NOTE.name
+                        else processingStage(task).name, System.currentTimeMillis())
                     CaptureEventLog.record(
                         context,
                         "task_recovered",

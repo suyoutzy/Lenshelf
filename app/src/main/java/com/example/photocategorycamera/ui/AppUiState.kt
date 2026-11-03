@@ -104,7 +104,7 @@ internal object AppUiStateMapper {
     ): AppUiState {
         val retryTask = tasks.firstOrNull { it.taskStage.isRetryable }
         val failedTasks = tasks.filter { it.taskStage == CaptureTaskStage.FAILED }
-        val activeTaskCount = tasks.size - failedTasks.size
+        val activeTaskCount = tasks.count { it.taskStage.occupiesActiveSlot }
         val orderedGroups = listOf(groups.firstOrNull { it.isHome } ?: HOME_GROUP) +
             groups.filterNot { it.isHome }.sortedBy { it.sortOrder }
         val selected = orderedGroups.firstOrNull { it.id == settings.selectedGroupId } ?: orderedGroups.first()

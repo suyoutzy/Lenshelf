@@ -29,9 +29,13 @@ data class AppSettings(
     val cameraGridEnabled: Boolean = false,
     val photoDateStampEnabled: Boolean = false,
     val photoDateStampFormat: PhotoDateStampFormat = PhotoDateStampFormat.DATE,
+    val postCaptureNoteEnabled: Boolean = false,
     val videoStabilizationEnabled: Boolean = true,
     val selectedGroupId: String = CategoryGroup.HOME_ID,
-)
+) {
+    val timeStampEnabled: Boolean get() = photoDateStampEnabled
+    val timeStampFormat: com.example.photocategorycamera.domain.TimeStampFormat get() = photoDateStampFormat
+}
 
 class SettingsRepository(context: Context, private val store: DataStore<Preferences> = context.settingsDataStore) {
     private object Keys {
@@ -48,6 +52,7 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
         val cameraGridEnabled = booleanPreferencesKey("camera_grid_enabled")
         val photoDateStampEnabled = booleanPreferencesKey("photo_date_stamp_enabled")
         val photoDateStampFormat = stringPreferencesKey("photo_date_stamp_format")
+        val postCaptureNoteEnabled = booleanPreferencesKey("post_capture_note_enabled")
         val videoStabilizationEnabled = booleanPreferencesKey("video_stabilization_enabled")
         val selectedGroupId = stringPreferencesKey("selected_group_id")
     }
@@ -102,6 +107,10 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
         store.edit { it[Keys.photoDateStampFormat] = format.name }
     }
 
+    suspend fun setTimeStampEnabled(enabled: Boolean) = setPhotoDateStampEnabled(enabled)
+    suspend fun setTimeStampFormat(format: com.example.photocategorycamera.domain.TimeStampFormat) = setPhotoDateStampFormat(format)
+    suspend fun setPostCaptureNoteEnabled(enabled: Boolean) { store.edit { it[Keys.postCaptureNoteEnabled] = enabled } }
+
     suspend fun setCameraGridEnabled(enabled: Boolean) {
         store.edit { it[Keys.cameraGridEnabled] = enabled }
     }
@@ -152,6 +161,7 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
             cameraGridEnabled = preferences[Keys.cameraGridEnabled] ?: false,
             photoDateStampEnabled = preferences[Keys.photoDateStampEnabled] ?: false,
             photoDateStampFormat = PhotoDateStampFormat.entries.firstOrNull { it.name == preferences[Keys.photoDateStampFormat] } ?: PhotoDateStampFormat.DATE,
+            postCaptureNoteEnabled = preferences[Keys.postCaptureNoteEnabled] ?: false,
             videoStabilizationEnabled = preferences[Keys.videoStabilizationEnabled] ?: true,
             selectedGroupId = preferences[Keys.selectedGroupId]?.takeIf { it.isNotBlank() } ?: CategoryGroup.HOME_ID,
         )
