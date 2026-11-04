@@ -136,20 +136,18 @@ internal fun CameraScreen(
     onBack: () -> Unit,
     onSwitchCategory: (String) -> Unit,
     onOpenDirectory: (Category) -> Unit,
-    gridEnabled: Boolean,
-    onGridEnabledChanged: (Boolean) -> Unit,
-    videoStabilizationEnabled: Boolean,
-    onVideoStabilizationEnabledChanged: (Boolean) -> Unit,
-    photoDateStampEnabled: Boolean = false,
-    photoDateStampFormat: com.example.photocategorycamera.domain.PhotoDateStampFormat = com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE,
-    onPhotoDateStampEnabledChanged: (Boolean) -> Unit = {},
-    onPhotoDateStampFormatChanged: (com.example.photocategorycamera.domain.PhotoDateStampFormat) -> Unit = {},
-    postCaptureNoteEnabled: Boolean = false,
-    onPostCaptureNoteEnabledChanged: (Boolean) -> Unit = {},
     noteEditorVisible: Boolean = false,
     onOpenPendingNotes: (String?) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val cameraSettings = state.cameraSettings
+    val gridEnabled = cameraSettings.gridEnabled
+    val videoStabilizationEnabled = cameraSettings.videoStabilizationEnabled
+    val flashMode = when (cameraSettings.flashMode) {
+        com.example.photocategorycamera.data.CategoryFlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
+        com.example.photocategorycamera.data.CategoryFlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
+        com.example.photocategorycamera.data.CategoryFlashMode.ON -> ImageCapture.FLASH_MODE_ON
+    }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val activity = remember(context) { context.findActivity() }
@@ -186,7 +184,6 @@ internal fun CameraScreen(
         CameraController(context, videoStabilizationEnabled)
     }
     val haptics = LocalHapticFeedback.current
-    var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
     var exposure by remember { mutableIntStateOf(0) }
     var minExposure by remember { mutableIntStateOf(0) }
     var maxExposure by remember { mutableIntStateOf(0) }
@@ -235,6 +232,7 @@ internal fun CameraScreen(
     LaunchedEffect(videoStabilizationEnabled) {
         controller.setVideoStabilizationEnabled(videoStabilizationEnabled)
     }
+    LaunchedEffect(state.category?.id, flashMode) { controller.setFlashMode(flashMode) }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -456,26 +454,24 @@ internal fun CameraScreen(
                                 )
                             },
                             onClick = {
-                                flashMode = when (flashMode) {
-                                    ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
-                                    ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
-                                    else -> ImageCapture.FLASH_MODE_OFF
-                                }
-                                flashMode = controller.cycleFlash()
+                                viewModel.updateCameraSettings { it.copy(flashMode = it.flashMode.next()) }
                             },
                         )
                         DropdownMenuItem(
                             text = { Text("井字格参考线") },
                             trailingIcon = { Switch(checked = gridEnabled, onCheckedChange = null) },
                             onClick = {
-                                onGridEnabledChanged(!gridEnabled)
+                                viewModel.updateCameraSettings { it.copy(gridEnabled = !it.gridEnabled) }
                                 settingsMenu = false
                             },
                         )
                         if (state.captureMode == CaptureMode.PHOTO) {
-                            PhotoDateStampSettings(photoDateStampEnabled, photoDateStampFormat,
-                                onPhotoDateStampEnabledChanged, onPhotoDateStampFormatChanged)
-                            PostCaptureNoteSettings(postCaptureNoteEnabled, onPostCaptureNoteEnabledChanged)
+                            PhotoDateStampSettings(cameraSettings.timeStampEnabled, cameraSettings.timeStampFormat,
+                                { value -> viewModel.updateCameraSettings { it.copy(timeStampEnabled = value) } },
+                                { value -> viewModel.updateCameraSettings { it.copy(timeStampFormat = value) } })
+                            PostCaptureNoteSettings(cameraSettings.postCaptureNoteEnabled) { value ->
+                                viewModel.updateCameraSettings { it.copy(postCaptureNoteEnabled = value) }
+                            }
                         }
                         if (state.captureMode == CaptureMode.DOCUMENT) {
                             DocumentEffect.entries.forEach { effect ->
@@ -506,8 +502,7 @@ internal fun CameraScreen(
                             },
                             onClick = {
                                 val enabled = !videoStabilizationEnabled
-                                controller.setVideoStabilizationEnabled(enabled)
-                                onVideoStabilizationEnabledChanged(enabled)
+                                viewModel.updateCameraSettings { it.copy(videoStabilizationEnabled = enabled) }
                                 settingsMenu = false
                             },
                         )

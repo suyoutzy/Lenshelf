@@ -19,6 +19,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import com.example.photocategorycamera.data.CategoryCameraSettings
 import com.example.photocategorycamera.data.blocksCategory
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -62,12 +65,15 @@ data class CameraUiState(
     val video: VideoRecordingState = VideoRecordingState(),
     val captureMode: CaptureMode = CaptureMode.PHOTO,
     val documentCapturing: Boolean = false,
-    val documentEffect: DocumentEffect = DocumentEffect.ORIGINAL,
+    val cameraSettings: CategoryCameraSettings = CategoryCameraSettings(),
+    val cameraSettingsLoaded: Boolean = false,
+    val cameraSettingsSaving: Boolean = false,
     internal val documentDisplay: DocumentDisplay? = null,
     val directoryLocked: Boolean = false,
 ) {
     val captureQueueFull: Boolean get() = pendingCaptureCount >= com.example.photocategorycamera.data.CaptureTaskRepository.MAX_OUTSTANDING
-    val controlsLocked: Boolean get() = video.isActive || documentCapturing
+    val controlsLocked: Boolean get() = video.isActive || documentCapturing || !cameraSettingsLoaded || cameraSettingsSaving
+    val documentEffect: DocumentEffect get() = cameraSettings.documentEffect
 }
 
 data class VideoPreparation(
@@ -120,6 +126,15 @@ class CameraViewModel(
     }
 
     init {
+        viewModelScope.launch {
+            mutableState.map { it.category?.id }.distinctUntilChanged().collectLatest { id ->
+                if (id != null) container.settings.categoryCameraSettings(id).collectLatest { settings ->
+                    if (mutableState.value.category?.id == id) {
+                        mutableState.value = mutableState.value.copy(cameraSettings = settings, cameraSettingsLoaded = true)
+                    }
+                }
+            }
+        }
         viewModelScope.launch {
             container.captureTasks.videoProgress.collectLatest { progress ->
                 mutableState.value = mutableState.value.copy(videoProcessingPercent=progress?.percent)
@@ -175,7 +190,31 @@ class CameraViewModel(
     }
 
     fun setDocumentEffect(effect: DocumentEffect) {
-        if (!mutableState.value.controlsLocked) mutableState.value = mutableState.value.copy(documentEffect = effect)
+        updateCameraSettings { it.copy(documentEffect = effect) }
+    }
+
+    fun updateCameraSettings(update: (CategoryCameraSettings) -> CategoryCameraSettings) {
+        val snapshot = mutableState.value
+        val id = snapshot.category?.id ?: return
+        if (snapshot.controlsLocked) return
+        mutableState.value = snapshot.copy(cameraSettingsSaving = true)
+        viewModelScope.launch {
+            try {
+                container.settings.updateCategoryCameraSettings(id, update)
+                val saved = container.settings.categoryCameraSettings(id).first()
+                if (mutableState.value.category?.id == id) {
+                    mutableState.value = mutableState.value.copy(cameraSettings = saved)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                reportMessage(error.message ?: "相机设置保存失败")
+            } finally {
+                if (mutableState.value.category?.id == id) {
+                    mutableState.value = mutableState.value.copy(cameraSettingsSaving = false)
+                }
+            }
+        }
     }
 
     fun dismissDocumentPreview(id: String? = null) {
@@ -376,9 +415,11 @@ class CameraViewModel(
             return
         }
         val target = snapshot.activeCategories.firstOrNull { it.id == newCategoryId } ?: return
+        if (target.id == snapshot.category?.id) return
         invalidateAutoPrompts()
         latestDocumentId = null
-        mutableState.value = snapshot.copy(category = target, message = null, documentDisplay = null)
+        mutableState.value = snapshot.copy(category = target, cameraSettings = CategoryCameraSettings(),
+            cameraSettingsLoaded = false, message = null, documentDisplay = null)
     }
 
     fun onCaptureFailed(taskId: String, tempFile: File, error: String) {

@@ -141,8 +141,8 @@ class CaptureTaskRepository(
     ): Result<CaptureReservation> = runCatching {
         initialization.await()
         reservationMutex.withLock { database.withTransaction {
-            val snapshot = settings.settings.first()
-            check(snapshot.storageRoot?.treeUri == root.treeUri) { "保存根目录已变化，请重新进入相机" }
+            val (appSettings, snapshot) = settings.captureSettings(category.id)
+            check(appSettings.storageRoot?.treeUri == root.treeUri) { "保存根目录已变化，请重新进入相机" }
             val latest = database.latestCaptureCategory(category.id)
             check(dao.countOutstanding() < MAX_OUTSTANDING) { "待处理任务已满，请等待保存完成" }
             val free = context.filesDir.usableSpace

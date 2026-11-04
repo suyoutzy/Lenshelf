@@ -785,14 +785,10 @@ class CameraController(
         )
     }
 
-    fun cycleFlash(): Int {
-        flashMode = when (flashMode) {
-            ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
-            ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
-            else -> ImageCapture.FLASH_MODE_OFF
-        }
-        imageCapture?.flashMode = flashMode
-        return flashMode
+    fun setFlashMode(mode: Int) {
+        require(mode == ImageCapture.FLASH_MODE_OFF || mode == ImageCapture.FLASH_MODE_AUTO || mode == ImageCapture.FLASH_MODE_ON)
+        flashMode = mode
+        imageCapture?.flashMode = mode
     }
 
     fun adjustExposure(delta: Int): Int {

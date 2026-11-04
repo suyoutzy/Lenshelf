@@ -15,12 +15,28 @@ import com.example.photocategorycamera.domain.FolderOpenMode
 import com.example.photocategorycamera.domain.PhotoDateStampFormat
 import com.example.photocategorycamera.domain.StorageRoot
 import com.example.photocategorycamera.domain.CategoryGroup
+import com.example.photocategorycamera.domain.DocumentEffect
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import java.io.IOException
 
 private val Context.settingsDataStore by preferencesDataStore(name = "app_settings")
+
+enum class CategoryFlashMode { OFF, AUTO, ON;
+    fun next(): CategoryFlashMode = when (this) { OFF -> AUTO; AUTO -> ON; ON -> OFF }
+}
+
+data class CategoryCameraSettings(
+    val gridEnabled: Boolean = false,
+    val timeStampEnabled: Boolean = true,
+    val timeStampFormat: PhotoDateStampFormat = PhotoDateStampFormat.DATE,
+    val postCaptureNoteEnabled: Boolean = false,
+    val videoStabilizationEnabled: Boolean = true,
+    val flashMode: CategoryFlashMode = CategoryFlashMode.OFF,
+    val documentEffect: DocumentEffect = DocumentEffect.ORIGINAL,
+)
 
 data class AppSettings(
     val storageRoot: StorageRoot? = null,
@@ -57,9 +73,47 @@ class SettingsRepository(context: Context, private val store: DataStore<Preferen
         val selectedGroupId = stringPreferencesKey("selected_group_id")
     }
 
-    val settings: Flow<AppSettings> = store.data
+    private val preferences = store.data
         .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
-        .map(::toSettings)
+    val settings: Flow<AppSettings> = preferences.map(::toSettings)
+
+    private fun categoryKey(id: String, name: String) = "category_camera_${id}_$name"
+
+    private fun categoryCameraSettings(id: String, p: Preferences): CategoryCameraSettings {
+        val defaults = CategoryCameraSettings()
+        return CategoryCameraSettings(
+            gridEnabled = p[booleanPreferencesKey(categoryKey(id,"grid"))] ?: defaults.gridEnabled,
+            timeStampEnabled = p[booleanPreferencesKey(categoryKey(id,"timestamp"))] ?: defaults.timeStampEnabled,
+            timeStampFormat = PhotoDateStampFormat.entries.firstOrNull { it.name == p[stringPreferencesKey(categoryKey(id,"timestamp_format"))] } ?: defaults.timeStampFormat,
+            postCaptureNoteEnabled = p[booleanPreferencesKey(categoryKey(id,"note"))] ?: defaults.postCaptureNoteEnabled,
+            videoStabilizationEnabled = p[booleanPreferencesKey(categoryKey(id,"stabilization"))] ?: defaults.videoStabilizationEnabled,
+            flashMode = CategoryFlashMode.entries.firstOrNull { it.name == p[stringPreferencesKey(categoryKey(id,"flash"))] } ?: defaults.flashMode,
+            documentEffect = DocumentEffect.entries.firstOrNull { it.name == p[stringPreferencesKey(categoryKey(id,"document_effect"))] } ?: defaults.documentEffect,
+        )
+    }
+
+    fun categoryCameraSettings(id: String): Flow<CategoryCameraSettings> {
+        require(id.isNotBlank())
+        return preferences.map { categoryCameraSettings(id,it) }
+    }
+
+    /** Read the root and category recipe from the same durable preferences snapshot. */
+    suspend fun captureSettings(id: String): Pair<AppSettings, CategoryCameraSettings> =
+        preferences.first().let { toSettings(it) to categoryCameraSettings(id,it) }
+
+    suspend fun updateCategoryCameraSettings(id: String, update: (CategoryCameraSettings) -> CategoryCameraSettings) {
+        require(id.isNotBlank())
+        store.edit { p ->
+            val value = update(categoryCameraSettings(id,p))
+            p[booleanPreferencesKey(categoryKey(id,"grid"))] = value.gridEnabled
+            p[booleanPreferencesKey(categoryKey(id,"timestamp"))] = value.timeStampEnabled
+            p[stringPreferencesKey(categoryKey(id,"timestamp_format"))] = value.timeStampFormat.name
+            p[booleanPreferencesKey(categoryKey(id,"note"))] = value.postCaptureNoteEnabled
+            p[booleanPreferencesKey(categoryKey(id,"stabilization"))] = value.videoStabilizationEnabled
+            p[stringPreferencesKey(categoryKey(id,"flash"))] = value.flashMode.name
+            p[stringPreferencesKey(categoryKey(id,"document_effect"))] = value.documentEffect.name
+        }
+    }
 
     suspend fun setStorageRoot(root: StorageRoot) {
         store.edit {

@@ -76,10 +76,6 @@ class DocumentCameraUiDeviceTest {
         }
         val settingsBefore = runBlocking { container.settings.settings.first() }
         val selectedBefore = settingsBefore.selectedGroupId
-        if (verifyNewOptions) runBlocking {
-            container.settings.setPhotoDateStampEnabled(true)
-            container.settings.setPhotoDateStampFormat(com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE)
-        }
         val group = if (custom) runBlocking {
             container.directoryOperations.createGroup("分组回归_${UUID.randomUUID().toString().take(8)}").getOrThrow()
         } else null
@@ -87,6 +83,9 @@ class DocumentCameraUiDeviceTest {
         val parentName = group?.name ?: CategoryGroup.HOME_NAME
         val name = "设备回归_${UUID.randomUUID().toString().take(8)}"
         val category = runBlocking { container.directoryOperations.createCategory(name, group?.id ?: CategoryGroup.HOME_ID).getOrThrow() }
+        if (verifyNewOptions) runBlocking { container.settings.updateCategoryCameraSettings(category.id) {
+            it.copy(timeStampEnabled=true, timeStampFormat=com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE)
+        } }
         val parent = rootDocument.findFile(parentName)!!
         try {
         Log.i("LenshelfDeviceTest", "fixtureCategory=$name")
@@ -129,7 +128,9 @@ class DocumentCameraUiDeviceTest {
         compose.onNodeWithContentDescription("拍照，长按录像").performClick()
         waitSaved(directory, 3)
         if (verifyNewOptions) {
-            runBlocking { container.settings.setPhotoDateStampFormat(com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE_TIME) }
+            runBlocking { container.settings.updateCategoryCameraSettings(category.id) {
+                it.copy(timeStampFormat=com.example.photocategorycamera.domain.PhotoDateStampFormat.DATE_TIME)
+            } }
             compose.onNodeWithContentDescription("拍照，长按录像").performClick()
             waitSaved(directory, 4)
             val photos = directory.listFiles().filter { it.type == "image/jpeg" }.sortedBy { it.name }
@@ -169,10 +170,6 @@ class DocumentCameraUiDeviceTest {
         }
         } finally { runBlocking {
             container.settings.setSelectedGroupId(selectedBefore)
-            if (verifyNewOptions) {
-                container.settings.setPhotoDateStampEnabled(settingsBefore.photoDateStampEnabled)
-                container.settings.setPhotoDateStampFormat(settingsBefore.photoDateStampFormat)
-            }
         } }
     }
 }

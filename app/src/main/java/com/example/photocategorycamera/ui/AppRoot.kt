@@ -189,16 +189,6 @@ fun AppRoot(
                             },
                             noteEditorVisible = noteState.visible,
                             onOpenPendingNotes = { notesViewModel.open(it) },
-                            postCaptureNoteEnabled = state.postCaptureNoteEnabled,
-                            onPostCaptureNoteEnabledChanged = appViewModel::setPostCaptureNoteEnabled,
-                            photoDateStampEnabled = state.photoDateStampEnabled,
-                            photoDateStampFormat = state.photoDateStampFormat,
-                            onPhotoDateStampEnabledChanged = appViewModel::setPhotoDateStampEnabled,
-                            onPhotoDateStampFormatChanged = appViewModel::setPhotoDateStampFormat,
-                            gridEnabled = state.cameraGridEnabled,
-                            onGridEnabledChanged = appViewModel::setCameraGridEnabled,
-                            videoStabilizationEnabled = state.videoStabilizationEnabled,
-                            onVideoStabilizationEnabledChanged = appViewModel::setVideoStabilizationEnabled,
                         )
                     }
             }

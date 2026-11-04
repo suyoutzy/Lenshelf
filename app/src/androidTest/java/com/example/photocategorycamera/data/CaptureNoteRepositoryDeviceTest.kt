@@ -21,11 +21,27 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class CaptureNoteRepositoryDeviceTest {
+    @Test fun captureFreezesTheSelectedCategorySettingsInsteadOfTheOldGlobalSettings() = withFixture { f ->
+        f.db.categoryDao().insert(CategoryEntity("other", "另一个", 1, true, 2))
+        f.settings.setPhotoDateStampEnabled(false)
+        f.settings.setPostCaptureNoteEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false, postCaptureNoteEnabled=true) }
+        val first = f.tasks.reserve(f.category, f.root, MediaKind.PHOTO) { File(f.context.filesDir, "a.jpg") }.getOrThrow()
+        val secondCategory = Category("other", "另一个", 1, true, 2)
+        val second = f.tasks.reserve(secondCategory, f.root, MediaKind.PHOTO) { File(f.context.filesDir, "b.jpg") }.getOrThrow()
+        val a = f.db.captureTaskDao().find(first.id)!!
+        val b = f.db.captureTaskDao().find(second.id)!!
+        assertFalse(a.timeStampEnabled); assertTrue(a.noteRequired); assertNull(a.photoDateStampText)
+        assertTrue(b.timeStampEnabled); assertFalse(b.noteRequired)
+        assertTrue(b.photoDateStampText!!.matches(Regex("\\d{4}-\\d{2}-\\d{2}")))
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true, postCaptureNoteEnabled=false) }
+        assertEquals(a, f.db.captureTaskDao().find(first.id))
+    }
     @Test fun videoOutOfMemoryPreservesOriginalAndReleasesCodecForOtherWork() =
         withFixture(CoroutineExceptionHandler { _, _ -> }) { f ->
             f.videoWriter = com.example.photocategorycamera.video.VideoStampWriter { _, _, _, _ -> throw OutOfMemoryError("injected") }
-            f.settings.setTimeStampEnabled(true)
-            f.settings.setPostCaptureNoteEnabled(true)
+            f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
+            f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=true) }
             val source = File(f.context.filesDir, "oom-original.mp4").apply { writeText("original video") }
             val video = f.tasks.reserve(f.category, f.root, MediaKind.VIDEO) { source }.getOrThrow()
             f.tasks.markVideoStarted(video.id).getOrThrow()
@@ -36,8 +52,8 @@ class CaptureNoteRepositoryDeviceTest {
             assertEquals("保留的备注", retry.noteText)
             assertEquals("original video", source.readText())
             withTimeout(3_000) { f.tasks.videoCodecs.acquireRecording().release() }
-            f.settings.setTimeStampEnabled(false)
-            f.settings.setPostCaptureNoteEnabled(false)
+            f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false) }
+            f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=false) }
             val photo = f.reservePhoto("after-oom.jpg")
             f.tasks.markReady(photo.id, MediaKind.PHOTO)
             withTimeout(5_000) { f.awaitStage(photo.id, CaptureTaskStage.RETRY) }
@@ -58,8 +74,8 @@ class CaptureNoteRepositoryDeviceTest {
     }
 
     @Test fun notesAreIndependentAndOnlyTheFirstInFlightCaptureOwnsTheAutoPrompt() = withFixture { f ->
-        f.settings.setPostCaptureNoteEnabled(true)
-        assertFalse(f.settings.settings.first().timeStampEnabled)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=true, timeStampEnabled=false) }
+        assertFalse(f.settings.categoryCameraSettings(f.category.id).first().timeStampEnabled)
         val first = f.reservePhoto("one.jpg")
         val second = f.reservePhoto("two.jpg")
         assertTrue(first.autoPromptEligible)
@@ -72,7 +88,7 @@ class CaptureNoteRepositoryDeviceTest {
         assertEquals(2, f.tasks.awaitingNotes.first().size)
         assertEquals(0, f.storage.writes)
         f.tasks.updateAnnotationDraft(first.id, "待检查").getOrThrow()
-        f.settings.setPostCaptureNoteEnabled(false)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=false) }
         f.settings.setStorageRoot(StorageRoot("content://fixture/root-b", "新目录", 2))
         val pending = f.db.captureTaskDao().find(first.id)!!
         assertEquals("待检查", pending.noteDraft)
@@ -82,7 +98,7 @@ class CaptureNoteRepositoryDeviceTest {
     }
 
     @Test fun aFullSaveQueueKeepsTheDraftAndAnEmptyNoteCanBeConfirmedIdempotently() = withFixture { f ->
-        f.settings.setPostCaptureNoteEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=true, timeStampEnabled=false) }
         val photo = f.reservePhoto("one.jpg")
         f.tasks.markReady(photo.id, MediaKind.PHOTO)
         f.awaitStage(photo.id, CaptureTaskStage.AWAITING_NOTE)
@@ -104,7 +120,7 @@ class CaptureNoteRepositoryDeviceTest {
     }
 
     @Test fun restartingDoesNotAutoConfirmNotesOrChangeTheirFrozenTargets() = withFixture { f ->
-        f.settings.setPostCaptureNoteEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=true) }
         val photo = f.reservePhoto("one.jpg")
         f.tasks.markReady(photo.id, MediaKind.PHOTO)
         f.awaitStage(photo.id, CaptureTaskStage.AWAITING_NOTE)
@@ -118,8 +134,8 @@ class CaptureNoteRepositoryDeviceTest {
     }
 
     @Test fun videoTimeFreezesAtActualStartInsteadOfTaskReservationOrSave() = withFixture { f ->
-        f.settings.setTimeStampEnabled(true)
-        f.settings.setTimeStampFormat(TimeStampFormat.DATE_TIME)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampFormat=TimeStampFormat.DATE_TIME) }
         f.clock = java.time.Instant.parse("2026-11-03T15:59:00Z").toEpochMilli()
         f.zone = java.time.ZoneId.of("Asia/Shanghai")
         val tasks = f.tasks
@@ -130,14 +146,14 @@ class CaptureNoteRepositoryDeviceTest {
         assertEquals("2026-11-04 00:00", f.db.captureTaskDao().find(video.id)!!.photoDateStampText)
         f.clock += 86400000
         f.zone = java.time.ZoneId.of("UTC")
-        f.settings.setTimeStampEnabled(false)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false) }
         tasks.markVideoStarted(video.id).getOrThrow()
         assertEquals("2026-11-04 00:00", f.db.captureTaskDao().find(video.id)!!.photoDateStampText)
     }
 
     @Test fun confirmedVideoUsesItsFrozenRecipeAndRetainsTheOriginalUntilSafVerification() = withFixture { f ->
-        f.settings.setTimeStampEnabled(true)
-        f.settings.setPostCaptureNoteEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=true) }
         val source = File(f.context.filesDir,"note-video.mp4")
         val video = f.tasks.reserve(f.category,f.root,MediaKind.VIDEO) {
             source.also { com.example.photocategorycamera.video.VideoStampFixture.write(it) }
@@ -147,8 +163,8 @@ class CaptureNoteRepositoryDeviceTest {
         val original = source.readBytes()
         f.tasks.markReady(video.id,MediaKind.VIDEO)
         f.awaitStage(video.id,CaptureTaskStage.AWAITING_NOTE)
-        f.settings.setTimeStampEnabled(false)
-        f.settings.setPostCaptureNoteEnabled(false)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false) }
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(postCaptureNoteEnabled=false) }
         f.tasks.confirmAnnotation(video.id,"录制后填写的备注").getOrThrow()
         val ready = f.awaitStage(video.id,CaptureTaskStage.RETRY)
         assertEquals(frozen,ready.photoDateStampText)
@@ -162,7 +178,7 @@ class CaptureNoteRepositoryDeviceTest {
     }
 
     @Test fun queuedVideoWaitsWhileARecordingOwnsTheCodecAndResumesWhenItIsReleased() = withFixture { f ->
-        f.settings.setTimeStampEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
         val source=File(f.context.filesDir,"held-video.mp4")
         val video=f.tasks.reserve(f.category,f.root,MediaKind.VIDEO) {
             source.also { com.example.photocategorycamera.video.VideoStampFixture.write(it) }

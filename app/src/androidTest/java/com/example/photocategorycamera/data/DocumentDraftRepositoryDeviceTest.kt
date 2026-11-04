@@ -73,10 +73,10 @@ class DocumentDraftRepositoryDeviceTest {
     }
 
     @Test fun photoStampFreezesSettingsAndRetainsSourceUntilVerifiedSave() = withFixture { f ->
-        assertFalse(f.settings.settings.first().photoDateStampEnabled)
-        assertEquals(PhotoDateStampFormat.DATE, f.settings.settings.first().photoDateStampFormat)
-        f.settings.setPhotoDateStampEnabled(true)
-        f.settings.setPhotoDateStampFormat(PhotoDateStampFormat.DATE_TIME)
+        assertTrue(f.settings.categoryCameraSettings(f.category.id).first().timeStampEnabled)
+        assertEquals(PhotoDateStampFormat.DATE, f.settings.categoryCameraSettings(f.category.id).first().timeStampFormat)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampFormat=PhotoDateStampFormat.DATE_TIME) }
         val reservation = f.tasks.reserve(f.category, f.root, MediaKind.PHOTO) {
             File(f.context.filesDir, "ordinary.jpg").also(f::writePhoto)
         }.getOrThrow()
@@ -84,8 +84,8 @@ class DocumentDraftRepositoryDeviceTest {
         val frozen = reserved.photoDateStampText!!
         assertTrue(frozen.matches(Regex("[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")))
         val sourceBytes = reservation.tempFile.readBytes()
-        f.settings.setPhotoDateStampEnabled(false)
-        f.settings.setPhotoDateStampFormat(PhotoDateStampFormat.DATE)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false) }
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampFormat=PhotoDateStampFormat.DATE) }
         f.tasks.markReady(reservation.id, MediaKind.PHOTO)
         val queued = f.retryTask(reservation.id)
         assertEquals(frozen, queued.photoDateStampText)
@@ -105,7 +105,7 @@ class DocumentDraftRepositoryDeviceTest {
     }
 
     @Test fun photoProcessingFailureCanRetryWithoutLosingTheFrozenDateOrOriginal() = withFixture { f ->
-        f.settings.setPhotoDateStampEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
         var fail = true
         var instant = java.time.Instant.parse("2026-10-28T15:59:00Z").toEpochMilli()
         var zone = java.time.ZoneId.of("Asia/Shanghai")
@@ -123,7 +123,7 @@ class DocumentDraftRepositoryDeviceTest {
         assertTrue(photo.tempFile.exists()); assertTrue(retry.taskStage.isRetryable)
         instant = java.time.Instant.parse("2026-11-03T10:00:00Z").toEpochMilli()
         zone = java.time.ZoneId.of("America/New_York")
-        f.settings.setPhotoDateStampEnabled(false)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false) }
         fail = false
         repository.retryAll()
         val queued = f.retryTask(photo.id)
@@ -139,7 +139,7 @@ class DocumentDraftRepositoryDeviceTest {
         f.tasks.markReady(photo.id, MediaKind.PHOTO)
         assertEquals(photo.tempFile.absolutePath, f.retryTask(photo.id).tempPath)
         assertArrayEquals(original, photo.tempFile.readBytes())
-        f.settings.setPhotoDateStampEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
         val video = f.tasks.reserve(f.category, f.root, MediaKind.VIDEO) { File(f.context.filesDir, "video.mp4") }.getOrThrow()
         assertNull(f.db.captureTaskDao().find(video.id)!!.photoDateStampText)
         val document = f.documents.reserve(f.category, f.root, DocumentEffect.ENHANCED).getOrThrow()
@@ -148,7 +148,7 @@ class DocumentDraftRepositoryDeviceTest {
     }
 
     @Test fun truncatedStampedCaptureBecomesClearableFailureWithoutConsumingQueueCapacity() = withFixture { f ->
-        f.settings.setPhotoDateStampEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
         val photo = f.tasks.reserve(f.category, f.root, MediaKind.PHOTO) {
             File(f.context.filesDir, "truncated-stamp.jpg").also(f::writePhoto)
         }.getOrThrow()
@@ -167,12 +167,12 @@ class DocumentDraftRepositoryDeviceTest {
     }
 
     @Test fun interruptedStampedPhotoResumesFromOriginalWithItsFrozenText() = withFixture { f ->
-        f.settings.setPhotoDateStampEnabled(true)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=true) }
         val photo = f.tasks.reserve(f.category, f.root, MediaKind.PHOTO) {
             File(f.context.filesDir, "interrupted.jpg").also(f::writePhoto)
         }.getOrThrow()
         val frozen = f.db.captureTaskDao().find(photo.id)!!.photoDateStampText
-        f.settings.setPhotoDateStampEnabled(false)
+        f.settings.updateCategoryCameraSettings(f.category.id) { it.copy(timeStampEnabled=false) }
         CaptureTaskRepository(f.context, f.db, f.settings, f.storage, f.scope)
         val recovered = f.retryTask(photo.id)
         assertEquals(frozen, recovered.photoDateStampText)

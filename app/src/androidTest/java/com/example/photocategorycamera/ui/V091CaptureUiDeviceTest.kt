@@ -123,9 +123,9 @@ class V091CaptureUiDeviceTest {
         try {
             runBlocking {
                 container.settings.setSelectedGroupId(group.id)
-                container.settings.setTimeStampEnabled(true)
-                container.settings.setTimeStampFormat(TimeStampFormat.DATE_TIME)
-                container.settings.setPostCaptureNoteEnabled(true)
+                listOf(a.id,b.id).forEach { id -> container.settings.updateCategoryCameraSettings(id) {
+                    it.copy(timeStampEnabled=true, timeStampFormat=TimeStampFormat.DATE_TIME, postCaptureNoteEnabled=true)
+                } }
             }
             ParcelFileDescriptor.AutoCloseInputStream(InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
                 "am start -W -f 0x10008000 -n ${app.packageName}/.MainActivity")).bufferedReader().use { it.readText() }
@@ -184,7 +184,9 @@ class V091CaptureUiDeviceTest {
             compose.onNodeWithText("待处理 3").performClick();waitEditor()
             compose.onNodeWithTag("note-input").assertTextContains("第一张，现场检查")
             compose.onNodeWithText("保存到：${a.directoryLabel}").assertIsDisplayed()
-            runBlocking { container.settings.setTimeStampEnabled(false);container.settings.setPostCaptureNoteEnabled(false) }
+            runBlocking { listOf(a.id,b.id).forEach { id -> container.settings.updateCategoryCameraSettings(id) {
+                it.copy(timeStampEnabled=false,postCaptureNoteEnabled=false)
+            } } }
             compose.onNodeWithText("保存").performClick()
             compose.waitUntil(10000) { compose.onAllNodesWithText("2 / 3").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("note-input").performTextReplacement("第二张")
@@ -221,9 +223,6 @@ class V091CaptureUiDeviceTest {
             }
         } finally {
             runBlocking {
-                container.settings.setTimeStampEnabled(before.timeStampEnabled)
-                container.settings.setTimeStampFormat(before.timeStampFormat)
-                container.settings.setPostCaptureNoteEnabled(before.postCaptureNoteEnabled)
                 container.settings.setSelectedGroupId(before.selectedGroupId)
                 val pending=container.captureTasks.outstanding.first().filter{it.categoryId in owned}
                 if(pending.isEmpty()) {
