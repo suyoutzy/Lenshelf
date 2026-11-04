@@ -87,6 +87,24 @@ class V091CaptureUiDeviceTest {
         }
     }
 
+    @Test fun finishOnlyTheExplicitOwnedPendingFixture() {
+        val args=InstrumentationRegistry.getArguments()
+        val groupId=args.getString("finishOwnedGroup")
+        assumeTrue(args.getString("allowDeviceCapture")=="true" && !groupId.isNullOrBlank())
+        val group=runBlocking { checkNotNull(container.groups.findById(groupId!!)) }
+        require(group.name.startsWith("备注验收_"))
+        val categories=runBlocking { container.categories.getAll(group.id) }
+        require(categories.map { it.name }.toSet()==setOf("照片备注","视频备注"))
+        val pending=runBlocking { container.captureTasks.outstanding.first() }
+        require(pending.isNotEmpty() && pending.all { it.groupId==group.id && it.taskStage==CaptureTaskStage.AWAITING_NOTE })
+        runBlocking { pending.forEach { container.captureTasks.confirmAnnotation(it.id, "").getOrThrow() } }
+        waitFor { container.captureTasks.outstanding.first().isEmpty() }
+        runBlocking {
+            categories.forEach { container.directoryOperations.deleteCategory(it).getOrThrow() }
+            container.directoryOperations.deleteGroup(group).getOrThrow()
+        }
+    }
+
     @Test fun firstPhotoPromptsCollapseDefersAndCrossCategoryVideoKeepsZoomAndFrozenTime() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("allowDeviceCapture")=="true")
         assumeTrue(app.checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)
@@ -141,6 +159,11 @@ class V091CaptureUiDeviceTest {
             compose.onNodeWithContentDescription("继续录像").performClick();SystemClock.sleep(1000)
             compose.onNodeWithContentDescription("停止录像").performClick()
             waitFor { container.captureTasks.awaitingNotes.first().size==3 }
+            waitCamera()
+            if (zoom==2.0) compose.waitUntil(30_000) {
+                // One label is the preset; the other is the camera's current reported zoom.
+                compose.onAllNodesWithText("2×").fetchSemanticsNodes().size>=2
+            }
             val pendingVideo=runBlocking { container.captureTasks.awaitingNotes.first().single { it.id==recording.id } }
             assertEquals(frozen,pendingVideo.photoDateStampText)
             if(InstrumentationRegistry.getArguments().getString("exportReviewSamples")=="true") {

@@ -21,6 +21,28 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class CaptureNoteRepositoryDeviceTest {
+    @Test fun videoOutOfMemoryPreservesOriginalAndReleasesCodecForOtherWork() =
+        withFixture(CoroutineExceptionHandler { _, _ -> }) { f ->
+            f.videoWriter = com.example.photocategorycamera.video.VideoStampWriter { _, _, _, _ -> throw OutOfMemoryError("injected") }
+            f.settings.setTimeStampEnabled(true)
+            f.settings.setPostCaptureNoteEnabled(true)
+            val source = File(f.context.filesDir, "oom-original.mp4").apply { writeText("original video") }
+            val video = f.tasks.reserve(f.category, f.root, MediaKind.VIDEO) { source }.getOrThrow()
+            f.tasks.markVideoStarted(video.id).getOrThrow()
+            f.tasks.markReady(video.id, MediaKind.VIDEO)
+            f.awaitStage(video.id, CaptureTaskStage.AWAITING_NOTE)
+            f.tasks.confirmAnnotation(video.id, "保留的备注").getOrThrow()
+            val retry = withTimeout(5_000) { f.awaitStage(video.id, CaptureTaskStage.VIDEO_RETRY) }
+            assertEquals("保留的备注", retry.noteText)
+            assertEquals("original video", source.readText())
+            withTimeout(3_000) { f.tasks.videoCodecs.acquireRecording().release() }
+            f.settings.setTimeStampEnabled(false)
+            f.settings.setPostCaptureNoteEnabled(false)
+            val photo = f.reservePhoto("after-oom.jpg")
+            f.tasks.markReady(photo.id, MediaKind.PHOTO)
+            withTimeout(5_000) { f.awaitStage(photo.id, CaptureTaskStage.RETRY) }
+            assertTrue(f.storage.writes > 0)
+        }
     @Test fun awaitingNotesDoNotExhaustTheEightActiveSlotsButStillProtectTheirCategory() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).build()
@@ -163,7 +185,9 @@ class CaptureNoteRepositoryDeviceTest {
         val storage = RetryStorage()
         var clock = System.currentTimeMillis()
         var zone = java.time.ZoneId.systemDefault()
-        val tasks = CaptureTaskRepository(context, db, settings, storage, scope, captureTimeMillis={clock}, captureZone={zone})
+        var videoWriter: com.example.photocategorycamera.video.VideoStampWriter? = null
+        val tasks by lazy { CaptureTaskRepository(context, db, settings, storage, scope, captureTimeMillis={clock}, captureZone={zone},
+            videoStamper=videoWriter ?: com.example.photocategorycamera.video.VideoStampProcessor(context)) }
         val category = Category("fixture", "设备", 0, true, 1)
         val root = StorageRoot("content://fixture/root-a", "原目录", 1)
         suspend fun reservePhoto(name: String) = tasks.reserve(category, root, MediaKind.PHOTO) {
@@ -180,14 +204,14 @@ class CaptureNoteRepositoryDeviceTest {
         }
     }
 
-    private fun withFixture(block: suspend (Fixture) -> Unit) = runBlocking {
+    private fun withFixture(handler: CoroutineExceptionHandler? = null, block: suspend (Fixture) -> Unit) = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Context>()
         val directory = File(app.cacheDir, "note-test-" + UUID.randomUUID()).apply { check(mkdirs()) }
         val context = object : ContextWrapper(app) {
             override fun getFilesDir() = directory
             override fun getApplicationContext(): Context = this
         }
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + (handler ?: kotlin.coroutines.EmptyCoroutineContext))
         val db = Room.inMemoryDatabaseBuilder(app,AppDatabase::class.java).build()
         val store = PreferenceDataStoreFactory.create(scope=scope, produceFile={ File(directory,"settings.preferences_pb") })
         try { withTimeout(45000) {

@@ -21,6 +21,7 @@ import android.view.animation.DecelerateInterpolator
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
@@ -117,6 +118,7 @@ class CameraController(
     private var targetRotation = Surface.ROTATION_0
     private var zoomAnimator: ValueAnimator? = null
     private var observedZoomState: LiveData<ZoomState>? = null
+    private var observedPhotoCameraState: LiveData<CameraState>? = null
     private var videoStabilizationEnabled = initialVideoStabilizationEnabled
     private var activeVideoStabilizationStatus = VideoStabilizationStatus.DISABLED_BY_USER
     private var activeRecording: Recording? = null
@@ -277,12 +279,11 @@ class CameraController(
             .build()
         observedZoomState?.removeObservers(owner)
         observedZoomState = null
+        observedPhotoCameraState?.removeObservers(owner)
+        observedPhotoCameraState = null
         cameraProvider.unbindAll()
         val boundCamera = cameraProvider.bindToLifecycle(owner, selector, useCaseGroup)
         camera = boundCamera
-        boundCamera.cameraInfo.zoomState.value?.let { zoom ->
-            boundCamera.cameraControl.setZoomRatio(zoomHandoff.request(zoomHandoff.requestedRatio, zoom.minZoomRatio, zoom.maxZoomRatio))
-        }
         val cameraManager = context.getSystemService(CameraManager::class.java)
         sensorTimestampRealtime = runCatching {
             val cameraId = cameraManager.cameraIdList.first { id ->
@@ -300,6 +301,18 @@ class CameraController(
         }
         zoomState.value?.let { zoom ->
             onZoomChanged(zoom.zoomRatio, zoom.minZoomRatio, zoom.maxZoomRatio)
+        }
+        // CameraX may reset zoom while closing the previous video session. Apply the
+        // latest user intent after the photo camera has actually reopened.
+        val photoCameraState = boundCamera.cameraInfo.cameraState
+        observedPhotoCameraState = photoCameraState
+        photoCameraState.observe(owner) { state ->
+            if (state.type == CameraState.Type.OPEN && camera === boundCamera && cameraEnabled && !released && !standaloneVideoRunning) {
+                boundCamera.cameraInfo.zoomState.value?.let { zoom ->
+                    val requested = zoomHandoff.request(zoomHandoff.requestedRatio, zoom.minZoomRatio, zoom.maxZoomRatio)
+                    boundCamera.cameraControl.setZoomRatio(requested)
+                }
+            }
         }
         boundCamera.cameraInfo.exposureState.let { exposure ->
             val range = exposure.exposureCompensationRange
@@ -582,6 +595,8 @@ class CameraController(
         imageCapture = null
         observedZoomState?.removeObservers(owner)
         observedZoomState = null
+        observedPhotoCameraState?.removeObservers(owner)
+        observedPhotoCameraState = null
         cameraProvider.unbindAll()
         val useCaseGroup = UseCaseGroup.Builder()
             .addUseCase(preview)
@@ -668,6 +683,9 @@ class CameraController(
                 reuseVideoCapture = true,
                 stabilizationEnabled = activeVideoStabilizationStatus == VideoStabilizationStatus.ACTIVE,
             )
+            val initialZoom = camera?.cameraInfo?.zoomState?.value
+            if (initialZoom != null) zoomHandoff.selectNewLens(initialZoom.zoomRatio, initialZoom.minZoomRatio, initialZoom.maxZoomRatio)
+            else zoomHandoff.selectNewLens(1f, 1f, 1f)
             true
         }.getOrElse { error ->
             lensFacing = previousLens
@@ -728,7 +746,7 @@ class CameraController(
         if (available) {
             zoomAnimator?.cancel()
             lensFacing = newLens
-            zoomHandoff.request(1f, 1f, 1f)
+            zoomHandoff.selectNewLens(1f, 1f, 1f)
             bindPhotoModeIfEnabled()
         }
         return available
@@ -842,8 +860,12 @@ class CameraController(
         activeRecording?.stop()
         activeRecording = null
         mainHandler.removeCallbacksAndMessages(null)
-        lifecycleOwner?.let { owner -> observedZoomState?.removeObservers(owner) }
+        lifecycleOwner?.let { owner ->
+            observedZoomState?.removeObservers(owner)
+            observedPhotoCameraState?.removeObservers(owner)
+        }
         observedZoomState = null
+        observedPhotoCameraState = null
         provider?.unbindAll()
         camera = null
         imageCapture = null

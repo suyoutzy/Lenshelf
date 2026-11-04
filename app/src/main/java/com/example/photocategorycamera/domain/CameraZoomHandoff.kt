@@ -12,6 +12,10 @@ class CameraZoomHandoff {
         return ratio.coerceIn(minimum, maximum).also { requestedRatio = it }
     }
 
+    /** A deliberate lens switch starts with that camera's own observed zoom. */
+    fun selectNewLens(initialRatio: Float, minimum: Float, maximum: Float): Float =
+        request(initialRatio, minimum, maximum)
+
     fun restoreBefore(
         minimum: Float,
         maximum: Float,

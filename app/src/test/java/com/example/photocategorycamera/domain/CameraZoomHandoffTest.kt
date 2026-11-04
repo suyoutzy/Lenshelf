@@ -4,6 +4,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CameraZoomHandoffTest {
+    @Test fun switchingToAnotherLensUsesItsOwnInitialZoomInsteadOfThePreviousLens() {
+        val zoom = CameraZoomHandoff()
+        zoom.request(2f, .5f, 10f)
+        zoom.selectNewLens(1f, 1f, 4f)
+        var applied = 0f
+        zoom.restoreBefore(1f, 4f, { ratio, done -> applied=ratio; done(Result.success(Unit)) }, {},
+            { throw AssertionError(it) })
+        assertEquals(1f, applied, 0f)
+    }
     @Test fun recordingWaitsForTheSelectedZoomToActuallyApply() {
         val zoom = CameraZoomHandoff()
         zoom.request(2f, .5f, 10f)

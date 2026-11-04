@@ -393,6 +393,9 @@ class CaptureTaskRepository(
         } catch (error: com.example.photocategorycamera.video.InvalidVideoSourceException) {
             dao.updateProgress(task.id,CaptureTaskStage.FAILED.name,task.targetUri,
                 error.message ?: "视频原件无法恢复",System.currentTimeMillis())
+        } catch (error: OutOfMemoryError) {
+            dao.updateProgress(task.id,CaptureTaskStage.VIDEO_RETRY.name,task.targetUri,
+                "视频处理内存不足，原片和备注已保留，请稍后重试",System.currentTimeMillis())
         } catch (error: Exception) {
             dao.updateProgress(task.id,CaptureTaskStage.VIDEO_RETRY.name,task.targetUri,
                 "视频处理失败，原片和备注已保留："+(error.message ?: "可重试"),System.currentTimeMillis())
