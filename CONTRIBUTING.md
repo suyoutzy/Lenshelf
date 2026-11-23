@@ -1,6 +1,6 @@
 # 参与 Lenshelf
 
-Lenshelf 的主仓库由项目维护者管理。公开仓库的读取权限不会赋予任何人直接修改主分支、合并提交或发布版本的权限。
+欢迎通过 Issue 反馈问题和建议，或通过 Pull Request 参与改进。项目维护者负责评审、合并与发布。
 
 ## 反馈问题
 
@@ -15,7 +15,7 @@ Lenshelf 的主仓库由项目维护者管理。公开仓库的读取权限不�
 
 ## 代码修改
 
-外部修改应在个人 Fork 中完成，并通过 Pull Request 提议。是否合并由项目维护者决定；未经授权不能直接写入主仓库。提交前至少执行：
+请在个人 Fork 中完成修改，再提交 Pull Request，说明变更目的和验证结果。环境与操作见[构建与开发](docs/BUILD.md)。文档修改检查文字、链接及其与当前行为的一致性即可；应用代码变更提交前至少执行：
 
 ```bash
 ./gradlew testDebugUnitTest lintDebug lintRelease assembleDebug assembleRelease assembleDebugAndroidTest --no-daemon
